@@ -4,6 +4,7 @@ Independent Research Project to predict the results of local elections using dem
 ## Program
 
 The main ETL program is in [scripts/Election_results_upload.py](scripts/Election_results_upload.py).
+The desktop app entrypoint is [irp_computer_program.py](irp_computer_program.py).
 
 ## Setup
 
@@ -11,6 +12,7 @@ The main ETL program is in [scripts/Election_results_upload.py](scripts/Election
 2. Copy [.env.example](.env.example) to `.env` and set your MySQL connection values.
 3. Put processed election CSV files in `data/election_results/processed`, or set `RESULTS_INPUT_FOLDER` to another folder.
 4. Run the uploader with Python.
+5. Run the desktop app with `python irp_computer_program.py`.
 
 ## Notes
 

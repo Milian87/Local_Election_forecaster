@@ -1,3 +1,8 @@
 pandas
 SQLAlchemy
 PyMySQL
+PySide6
+PySide6-WebEngine
+folium
+geopandas
+matplotlib

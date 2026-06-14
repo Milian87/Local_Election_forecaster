@@ -14,12 +14,8 @@ env/
 
 # Local data and generated outputs
 data/
-logo/
 maps/
-county_divisions.geojson
-output_boundaries.geojson
-ward_boundaries.geojson
-Ward_to_LAD_to_County_to_County_Electoral_Division_(May_2025)_Lookup_for_EN.csv
+
 
 # ETL runtime artifacts
 *.log
