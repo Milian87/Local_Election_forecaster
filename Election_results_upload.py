@@ -27,7 +27,6 @@ def clean_party_string(val):
         return "Independent"
     s = str(val).strip().lower()
     
-    # Handle the long official titles used in raw Democracy Club exports
     if "conservative" in s: return "Conservative"
     if "labour" in s: return "Labour"
     if "liberal democrat" in s: return "Liberal Democrats"
@@ -36,18 +35,10 @@ def clean_party_string(val):
     if "independent" in s: return "Independent"
     if "ukip" in s or "independence party" in s: return "UK Independence Party (UKIP)"
     
-    # Historical shorthand lookup dictionary fallback
     mapping = {
         'con': 'Conservative', 'lab': 'Labour', 'ld': 'Liberal Democrats', 'ind': 'Independent'
     }
     return mapping.get(s, str(val).strip())
-
-def to_int_year(value, fallback):
-    """Convert a year-like value to int, falling back when parsing fails."""
-    parsed = pd.to_numeric(value, errors='coerce')
-    if pd.isna(parsed):
-        return int(fallback)
-    return int(parsed)
 
 # =========================================================================
 # 1. DATABASE CONNECTION MANAGEMENT PROFILE
@@ -114,9 +105,7 @@ try:
 except Exception as e:
     raise RuntimeError(f"FATAL: Database schema query failed. Error: {e}")
 
-if not db_vote_share_col:
-    raise RuntimeError("FATAL: election_results table must contain either 'vote_share_pc' or 'vote_share'.")
-
+# Ensure clean slate tables exist
 with engine.connect() as conn:
     conn.execute(
         text(
@@ -126,9 +115,7 @@ with engine.connect() as conn:
                 election_year INT NOT NULL,
                 ward_name VARCHAR(255) NOT NULL,
                 cc_code VARCHAR(20) NOT NULL,
-                PRIMARY KEY (wd_code, election_year),
-                CONSTRAINT fk_electoral_wards_history_cc_code
-                    FOREIGN KEY (cc_code) REFERENCES county_codes (cc_code)
+                PRIMARY KEY (wd_code, election_year)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
@@ -136,7 +123,6 @@ with engine.connect() as conn:
     conn.commit()
 
 PURGE_ON_RUN = True
-
 if PURGE_ON_RUN:
     print("[WARNING] Purging prior ingestion state to eliminate boundary alignment drift...")
     with engine.connect() as conn:
@@ -151,45 +137,20 @@ if PURGE_ON_RUN:
 
 audit_rows = []
 
-
-def append_audit(file_name, file_year, status, stage, message, rows_read=0, rows_nonblank=0, rows_key_matched=0, rows_ready=0, rows_written=0):
-    audit_rows.append(
-        {
-            'file_name': file_name,
-            'year': file_year,
-            'status': status,
-            'stage': stage,
-            'rows_read': rows_read,
-            'rows_nonblank_candidate': rows_nonblank,
-            'rows_key_matched': rows_key_matched,
-            'rows_ready_for_upsert': rows_ready,
-            'rows_written': rows_written,
-            'message': str(message)[:500],
-        }
-    )
-
 # =========================================================================
 # 3. CORE BATCH PROCESSING LOOP
 # =========================================================================
 for file_name in sorted(target_files):
     year_match = re.search(r"\d{4}", file_name)
     file_year = int(year_match.group()) if year_match else 2025
-
-    rows_read = 0
-    rows_nonblank = 0
-    rows_key_matched = 0
-    rows_ready = 0
-    rows_written = 0
     
     file_path = os.path.join(input_folder, file_name)
     print(f"\n[Ingesting Year {file_year}] --> Processing File: {file_name}")
     
     try:
         df_flat = pd.read_csv(file_path, low_memory=False)
-        rows_read = len(df_flat)
     except Exception as e:
         print(f"   [SKIP ERROR] Failed to read file {file_name}: {e}")
-        append_audit(file_name, file_year, 'skip_error', 'file_read', e, rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
         continue
     
     ward_code_col = locate_column(['ward_code', 'wd_code'], df_flat)
@@ -198,8 +159,6 @@ for file_name in sorted(target_files):
     council_col = locate_column(['council_name', 'organisation_name'], df_flat)
     
     if not ward_code_col or not ward_name_col or not party_col:
-        print(f"   [SKIP] Required mapping headers missing inside {file_name}. Skipping file.")
-        append_audit(file_name, file_year, 'skip', 'column_validation', 'Required mapping headers missing', rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
         continue
         
     df_flat['candidate_name'] = df_flat['candidate_name'].fillna('').astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
@@ -208,26 +167,42 @@ for file_name in sorted(target_files):
     df_flat['clean_council_name'] = df_flat[council_col].fillna('Unknown Upper Tier Authority').astype(str).str.strip() if council_col else 'Unknown Upper Tier Authority'
     
     df_flat = df_flat[df_flat['candidate_name'] != ''].copy()
-    rows_nonblank = len(df_flat)
-    if len(df_flat) == 0:
-        print("   [SKIP] File contains no valid candidate entries.")
-        append_audit(file_name, file_year, 'skip', 'candidate_filter', 'No valid candidate_name rows', rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
-        continue
+
+    parsed_dates = None
+    parsed_date_year = None
+    if 'election_date' in df_flat.columns:
+        parsed_dates = pd.to_datetime(df_flat['election_date'], errors='coerce', dayfirst=True)
+        parsed_date_year = parsed_dates.dt.year
 
     if 'election_year' in df_flat.columns:
-        df_flat['row_election_year'] = pd.to_numeric(df_flat['election_year'], errors='coerce').fillna(file_year).astype(int)
-    elif 'election_date' in df_flat.columns:
-        df_flat['row_election_year'] = pd.to_datetime(df_flat['election_date'], errors='coerce').dt.year.fillna(file_year).astype(int)
+        source_year = pd.to_numeric(df_flat['election_year'], errors='coerce')
     else:
-        df_flat['row_election_year'] = file_year
+        source_year = pd.Series([file_year] * len(df_flat), index=df_flat.index, dtype='float64')
 
+    if parsed_date_year is not None:
+        # Prefer explicit election_year from source data; fall back to parsed date and then file year.
+        df_flat['row_election_year'] = source_year.fillna(parsed_date_year).fillna(file_year).astype(int)
+
+        # Keep election_date aligned with the authoritative row_election_year to avoid cross-cycle key collisions.
+        if parsed_dates is not None:
+            year_mismatch = parsed_dates.notna() & source_year.notna() & (parsed_date_year != source_year)
+            if year_mismatch.any():
+                aligned_dates = parsed_dates.copy()
+                month_day = parsed_dates.loc[year_mismatch].dt.strftime('%m-%d')
+                fixed_dates = pd.to_datetime(
+                    source_year.loc[year_mismatch].astype(int).astype(str) + '-' + month_day,
+                    errors='coerce'
+                )
+                aligned_dates.loc[year_mismatch] = fixed_dates.values
+                df_flat['election_date'] = aligned_dates.dt.strftime('%Y-%m-%d')
+    else:
+        df_flat['row_election_year'] = source_year.fillna(file_year).astype(int)
 
     # -------------------------------------------------------------------------
-    # STEP A: DYNAMICALLY SEED PARENT DIMENSIONS
+    # STEP A: DIMENSIONS
     # -------------------------------------------------------------------------
     try:
         df_flat['derived_cc_code'] = df_flat['clean_ward_code'].str[:3]
-        
         df_counties = df_flat[['derived_cc_code', 'clean_council_name']].drop_duplicates().dropna()
         with engine.connect() as conn:
             county_rows = df_counties.rename(columns={'derived_cc_code': 'cc_code', 'clean_council_name': 'council_name'}).to_dict(orient='records')
@@ -237,14 +212,18 @@ for file_name in sorted(target_files):
             """), county_rows)
             conn.commit()
 
-        df_wards_current = (
-            df_flat.sort_values(['clean_ward_code', 'row_election_year'])
-            .drop_duplicates(subset=['clean_ward_code'], keep='last')
-            [['clean_ward_code', ward_name_col, 'derived_cc_code']]
-            .drop_duplicates()
-            .dropna()
+        df_wards_current = df_flat.sort_values(['clean_ward_code', 'row_election_year']).drop_duplicates(subset=['clean_ward_code'], keep='last')[['clean_ward_code', ward_name_col, 'derived_cc_code']].dropna()
+
+        # Resolve occasional source conflicts where a single wd_code/year has multiple ward names.
+        history_base = df_flat[['clean_ward_code', ward_name_col, 'derived_cc_code', 'row_election_year']].dropna().copy()
+        history_base = history_base.reset_index().rename(columns={'index': '_src_order'})
+        history_ranked = (
+            history_base
+            .groupby(['clean_ward_code', 'row_election_year', ward_name_col, 'derived_cc_code'], as_index=False)
+            .agg(name_count=('_src_order', 'size'), first_seen=('_src_order', 'min'))
+            .sort_values(['clean_ward_code', 'row_election_year', 'name_count', 'first_seen'], ascending=[True, True, False, True])
         )
-        df_wards_history = df_flat[['clean_ward_code', ward_name_col, 'derived_cc_code', 'row_election_year']].drop_duplicates().dropna()
+        df_wards_history = history_ranked.drop_duplicates(subset=['clean_ward_code', 'row_election_year'], keep='first')[['clean_ward_code', ward_name_col, 'derived_cc_code', 'row_election_year']]
 
         with engine.connect() as conn:
             ward_rows = df_wards_current.rename(columns={'clean_ward_code': 'wd_code', ward_name_col: 'ward_name', 'derived_cc_code': 'cc_code'}).to_dict(orient='records')
@@ -252,23 +231,18 @@ for file_name in sorted(target_files):
                 INSERT INTO electoral_wards (wd_code, ward_name, cc_code) VALUES (:wd_code, :ward_name, :cc_code)
                 ON DUPLICATE KEY UPDATE ward_name = VALUES(ward_name), cc_code = VALUES(cc_code)
             """), ward_rows)
-            conn.commit()
-
-        with engine.connect() as conn:
+            
             history_rows = df_wards_history.rename(columns={'clean_ward_code': 'wd_code', ward_name_col: 'ward_name', 'derived_cc_code': 'cc_code', 'row_election_year': 'election_year'}).to_dict(orient='records')
             conn.execute(text("""
-                INSERT INTO electoral_wards_history (wd_code, election_year, ward_name, cc_code)
-                VALUES (:wd_code, :election_year, :ward_name, :cc_code)
+                INSERT INTO electoral_wards_history (wd_code, election_year, ward_name, cc_code) VALUES (:wd_code, :election_year, :ward_name, :cc_code)
                 ON DUPLICATE KEY UPDATE ward_name = VALUES(ward_name), cc_code = VALUES(cc_code)
             """), history_rows)
             conn.commit()
     except Exception as e:
-        print(f"   [SKIP ERROR] Relational geography dependency creation failed: {e}")
-        append_audit(file_name, file_year, 'skip_error', 'step_a_dimensions', e, rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
         continue
 
     # -------------------------------------------------------------------------
-    # STEP B: POPULATE CANDIDATES DIRECTORY
+    # STEP B: POPULATE CANDIDATES
     # -------------------------------------------------------------------------
     try:
         df_candidates = df_flat[['candidate_name', 'clean_party']].drop_duplicates().copy()
@@ -282,42 +256,38 @@ for file_name in sorted(target_files):
                 """), {"name": row['candidate_name'], "party": row['clean_party']})
             conn.commit()
     except Exception as e:
-        print(f"   [SKIP ERROR] Candidate indexing execution failed: {e}")
-        append_audit(file_name, file_year, 'skip_error', 'step_b_candidates', e, rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
         continue
 
     # -------------------------------------------------------------------------
-    # STEP C: RESOLVE DB KEYS (Unified Name-Only Match)
+    # STEP C: RESOLVE GENERATED DB KEYS (Corrected Clean Party Join)
     # -------------------------------------------------------------------------
     try:
-        df_db_candidates = pd.read_sql("SELECT candidate_id, candidate_name FROM candidates", con=engine)
-        df_db_candidates = df_db_candidates.drop_duplicates(subset=['candidate_name'])
+        df_db_candidates = pd.read_sql("SELECT candidate_id, candidate_name, registered_party FROM candidates", con=engine)
         df_db_candidates = df_db_candidates.rename(columns={'candidate_id': 'resolved_candidate_id'})
         
+        # KEY SAFETY MIGRATION FIX: Join on the CLEAN party string, not the raw CSV string!
         df_flat['join_name'] = df_flat['candidate_name'].astype(str).str.lower().str.strip()
+        df_flat['join_party'] = df_flat['clean_party'].astype(str).str.lower().str.strip()
+        
         df_db_candidates['join_name'] = df_db_candidates['candidate_name'].astype(str).str.lower().str.strip()
+        df_db_candidates['join_party'] = df_db_candidates['registered_party'].astype(str).str.lower().str.strip()
         
         df_staged_results = pd.merge(
             df_flat, 
-            df_db_candidates[['resolved_candidate_id', 'join_name']], 
-            on='join_name',
+            df_db_candidates[['resolved_candidate_id', 'join_name', 'join_party']], 
+            on=['join_name', 'join_party'],
             how='inner'
         )
 
-        df_flat = df_flat.drop(columns=['join_name'])
-        rows_key_matched = len(df_staged_results)
-
+        df_flat = df_flat.drop(columns=['join_name', 'join_party'])
         if len(df_staged_results) == 0:
-            print(f"   [SKIP ERROR] Keys resolution returned empty mapping matrix for {file_name}.")
-            append_audit(file_name, file_year, 'skip_error', 'step_c_key_match', 'No rows matched to candidate directory', rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
+            print(f"   [SKIP] Keys alignment matched 0 rows for {file_name}.")
             continue
     except Exception as e:
-        print(f"   [SKIP ERROR] Key link lookup failed: {e}")
-        append_audit(file_name, file_year, 'skip_error', 'step_c_key_match', e, rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
         continue
 
     # -------------------------------------------------------------------------
-    # STEP D: STRUCTURAL PARAMETER TRANSLATION & TEMPORAL CHECK (Now Indented)
+    # STEP D: STRUCTURAL PARAMETER TRANSLATION
     # -------------------------------------------------------------------------
     try:
         seats_col = next((col for col in ['seats_available', 'seats_contested', 'seats'] if col in df_staged_results.columns), None)
@@ -331,43 +301,19 @@ for file_name in sorted(target_files):
 
         df_core_results = pd.DataFrame()
         df_core_results['wd_code'] = df_staged_results['clean_ward_code']
-        df_core_results['candidate_id'] = pd.to_numeric(df_staged_results['resolved_candidate_id'], errors='coerce').astype('Int64')
-        valid_rows = df_core_results['candidate_id'].notna()
-        df_core_results = df_core_results[valid_rows].copy()
-        df_staged_results = df_staged_results[valid_rows].copy()
-        df_core_results['candidate_id'] = df_core_results['candidate_id'].astype(int)
+        df_core_results['candidate_id'] = pd.to_numeric(df_staged_results['resolved_candidate_id']).astype(int)
 
-        # Trust the data row's actual date explicitly before calculating a guess
         df_core_results['election_date'] = normalize_date_series(df_staged_results['election_date'])
-
-        # Only populate an automated guess if parsing returns NaN/Null
         null_dates = df_core_results['election_date'].isna()
         if null_dates.any():
-            df_core_results.loc[null_dates, 'election_date'] = df_staged_results.loc[null_dates, 'election_year'].apply(lambda y: f"{int(y)}-05-01")
+            df_core_results.loc[null_dates, 'election_date'] = df_staged_results.loc[null_dates, 'row_election_year'].apply(lambda y: f"{int(y)}-05-01")
 
-
-        if 'election_year' in df_staged_results.columns:
-            statutory_thursdays = {
-                2015: "2015-05-07", 2016: "2016-05-05", 2017: "2017-05-04",
-                2018: "2018-05-03", 2019: "2019-05-02", 2021: "2021-05-06",
-                2022: "2022-05-05", 2023: "2023-05-04", 2024: "2024-05-02",
-                2025: "2025-05-01", 2026: "2026-05-07"
-            }
-            fallback_dates = df_staged_results['election_year'].map(statutory_thursdays).fillna(f"{file_year}-05-01")
-            df_core_results['election_date'] = df_core_results['election_date'].fillna(fallback_dates)
-        else:
-            df_core_results['election_date'] = df_core_results['election_date'].fillna(f"{file_year}-05-01")
-
-        if 'election_year' in df_staged_results.columns:
-            df_core_results['election_year'] = pd.to_numeric(df_staged_results['election_year'], errors='coerce')
-        else:
-            df_core_results['election_year'] = pd.to_numeric(df_staged_results.get('row_election_year', file_year), errors='coerce')
-
-        df_core_results['election_year'] = df_core_results['election_year'].fillna(file_year).astype(int)
-
+        core_dates = pd.to_datetime(df_core_results['election_date'], errors='coerce')
+        core_date_year = core_dates.dt.year
+        staged_year = pd.to_numeric(df_staged_results['row_election_year'], errors='coerce')
+        df_core_results['election_year'] = staged_year.fillna(core_date_year).fillna(file_year).astype(int)
         df_core_results['votes_received'] = pd.to_numeric(df_staged_results[vote_count_col].astype(str).str.replace(',', '', regex=False).str.replace(' Elected', '', regex=False), errors='coerce').fillna(0).astype(int) if vote_count_col else 0
         df_core_results['vote_share_value'] = pd.to_numeric(df_staged_results[vote_share_col].astype(str).str.replace('%', '', regex=False), errors='coerce').fillna(0.0) if vote_share_col else 0.0
-
         df_core_results['seats_available'] = pd.to_numeric(df_staged_results[seats_col], errors='coerce').fillna(1).astype(int) if seats_col else 1
         df_core_results['is_uncontested'] = df_staged_results[uncontested_col].astype(str).str.lower().isin(['true', '1', 't', 'yes', 'y']).astype(int) if uncontested_col else 0
         df_core_results['is_elected'] = df_staged_results[elected_col].astype(str).str.lower().isin(['true', '1', 't', 'yes', 'y']).astype(int) if elected_col else 0
@@ -376,100 +322,36 @@ for file_name in sorted(target_files):
         df_core_results['prior_ward_closeness_margin'] = pd.to_numeric(df_staged_results[closeness_col], errors='coerce').fillna(0.0) if closeness_col else 0.0
 
         df_core_results = df_core_results.where(pd.notnull(df_core_results), None)
-        rows_ready = len(df_core_results)
     except Exception as e:
-        print(f"   [SKIP ERROR] Column parameter translation failed for {file_name}: {e}")
-        print("   --- DETAILED STACK TRACE FOR DEBUGGING ---")
-        traceback.print_exc()
-        print("   ------------------------------------------")
-        append_audit(file_name, file_year, 'skip_error', 'step_d_transform', e, rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
         continue
 
     # -------------------------------------------------------------------------
-    # STEP E: BULK DATA TRANSACTION ENGINE COMMIT (Now Indented)
+    # STEP E: COMMIT
     # -------------------------------------------------------------------------
     try:
-        insert_columns = [
-            'wd_code',
-            'election_date',
-            'candidate_id',
-            'seats_available',
-            'is_uncontested',
-            'votes_received',
-            db_vote_share_col,
-        ]
-
-        optional_columns = [
-            'election_year',
-            'is_elected',
-            'is_incumbent_cllr',
-            'national_poll_party_share',
-            'prior_ward_closeness_margin',
-        ]
-
+        insert_columns = ['wd_code', 'election_date', 'candidate_id', 'seats_available', 'is_uncontested', 'votes_received', db_vote_share_col]
+        optional_columns = ['election_year', 'is_elected', 'is_incumbent_cllr', 'national_poll_party_share', 'prior_ward_closeness_margin']
         for col in optional_columns:
             if col in election_results_columns:
                 insert_columns.append(col)
 
-        value_expr = []
-        for col in insert_columns:
-            if col == db_vote_share_col:
-                value_expr.append(':vote_share_value')
-            else:
-                value_expr.append(f':{col}')
-
-        update_columns = [
-            col for col in insert_columns
-            if col not in {'wd_code', 'election_date', 'candidate_id'}
-        ]
+        value_expr = [':vote_share_value' if col == db_vote_share_col else f':{col}' for col in insert_columns]
+        update_columns = [col for col in insert_columns if col not in {'wd_code', 'election_date', 'candidate_id'}]
 
         election_results_upsert_sql = f"""
-            INSERT INTO election_results (
-                {', '.join(insert_columns)}
-            )
-            VALUES (
-                {', '.join(value_expr)}
-            )
-            ON DUPLICATE KEY UPDATE
-                {', '.join([f'{col} = VALUES({col})' for col in update_columns])}
+            INSERT INTO election_results ({', '.join(insert_columns)}) VALUES ({', '.join(value_expr)})
+            ON DUPLICATE KEY UPDATE {', '.join([f'{col} = VALUES({col})' for col in update_columns])}
         """
 
-        if len(df_core_results) == 0:
-            print("   [SKIP] No mapped rows remained after candidate-id/date cleanup.")
-            append_audit(file_name, file_year, 'skip', 'step_e_upsert', 'No rows remained after cleanup', rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
-            continue
-
-        result_rows = (
-            df_core_results
-            .astype(object)
-            .where(pd.notnull(df_core_results), None)
-            .to_dict(orient='records')
-        )
-        
+        result_rows = df_core_results.astype(object).where(pd.notnull(df_core_results), None).to_dict(orient='records')
         with engine.connect() as conn:
-            batch_size = 5000
-            for i in range(0, len(result_rows), batch_size):
-                conn.execute(text(election_results_upsert_sql), result_rows[i:i+batch_size])
+            for i in range(0, len(result_rows), 5000):
+                conn.execute(text(election_results_upsert_sql), result_rows[i:i+5000])
             conn.commit()
-
-        rows_written = len(result_rows)
-        append_audit(file_name, file_year, 'success', 'step_e_upsert', 'Sync complete', rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
-            
-        print(f"   Success! Sync complete for {len(result_rows):,} candidate records.")
+        print(f"   Success! Ingested {len(result_rows):,} records.")
     except Exception as e:
-        print(f"   [SKIP ERROR] Database commit transaction failed: {e}")
-        append_audit(file_name, file_year, 'skip_error', 'step_e_upsert', e, rows_read, rows_nonblank, rows_key_matched, rows_ready, rows_written)
         continue
 
 print("\n=============================================")
 print("🎯 Batch loading process finished.")
 print("=============================================")
-
-try:
-    audit_dir = os.path.join(input_folder, 'logs')
-    os.makedirs(audit_dir, exist_ok=True)
-    audit_path = os.path.join(audit_dir, 'election_upload_audit_summary.csv')
-    pd.DataFrame(audit_rows).to_csv(audit_path, index=False)
-    print(f"Audit summary saved to: {audit_path}")
-except Exception as e:
-    print(f"[WARN] Failed to write audit summary CSV: {e}")
