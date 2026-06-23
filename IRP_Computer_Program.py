@@ -1,9 +1,4 @@
-from IRP_Computer_Program import IRPComputerProgram
-
-
-if __name__ == "__main__":
-    program = IRPComputerProgram()
-    program.run()# IRP Computer Program
+# IRP Computer Program
 # Using Machine Learning & Statistical Analysis to Predict UK Local Election Results
 # Ian Milburn
 # created: 21/05/2026

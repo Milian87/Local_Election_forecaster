@@ -12,15 +12,6 @@ def locate_column(candidates, df):
             return col
     return None
 
-def normalize_date_series(series):
-    """Parse mixed date formats to YYYY-MM-DD strings for MySQL DATE fields."""
-    s = series.astype(str).str.strip()
-    iso = pd.to_datetime(s, format='%Y-%m-%d', errors='coerce')
-    dmy = pd.to_datetime(s, format='%d/%m/%Y', errors='coerce')
-    generic = pd.to_datetime(s, errors='coerce')
-    dt = iso.fillna(dmy).fillna(generic)
-    return dt.dt.strftime('%Y-%m-%d')
-
 def clean_party_string(val):
     """Standardize party strings and strip common descriptive variations."""
     if pd.isna(val): 
@@ -135,8 +126,6 @@ if PURGE_ON_RUN:
         conn.commit()
     print("[SUCCESS] Relational staging baseline cleared.")
 
-audit_rows = []
-
 # =========================================================================
 # 3. CORE BATCH PROCESSING LOOP
 # =========================================================================
@@ -145,7 +134,7 @@ for file_name in sorted(target_files):
     file_year = int(year_match.group()) if year_match else 2025
     
     file_path = os.path.join(input_folder, file_name)
-    print(f"\n[Ingesting Year {file_year}] --> Processing File: {file_name}")
+    print(f"\n[Ingesting Cycle Folder Year {file_year}] --> Processing File: {file_name}")
     
     try:
         df_flat = pd.read_csv(file_path, low_memory=False)
@@ -159,6 +148,7 @@ for file_name in sorted(target_files):
     council_col = locate_column(['council_name', 'organisation_name'], df_flat)
     
     if not ward_code_col or not ward_name_col or not party_col:
+        print(f"   [SKIP] Missing core schema columns in {file_name}.")
         continue
         
     df_flat['candidate_name'] = df_flat['candidate_name'].fillna('').astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
@@ -168,35 +158,19 @@ for file_name in sorted(target_files):
     
     df_flat = df_flat[df_flat['candidate_name'] != ''].copy()
 
-    parsed_dates = None
-    parsed_date_year = None
-    if 'election_date' in df_flat.columns:
-        parsed_dates = pd.to_datetime(df_flat['election_date'], errors='coerce', dayfirst=True)
-        parsed_date_year = parsed_dates.dt.year
-
-    if 'election_year' in df_flat.columns:
-        source_year = pd.to_numeric(df_flat['election_year'], errors='coerce')
+    # --- DATE PARSING FIX BLOCK ---
+    date_col = locate_column(['election_date'], df_flat)
+    if date_col:
+        # Evaluate row-by-row with strict priority to UK styles, avoiding NaT errors
+        parsed_dates = pd.to_datetime(df_flat[date_col], format='mixed', dayfirst=True, errors='coerce')
+        df_flat['election_date'] = parsed_dates.dt.strftime('%Y-%m-%d')
+        # Assign the TRUE dynamic year based on the parsed date string itself
+        df_flat['row_election_year'] = parsed_dates.dt.year.fillna(file_year).astype(int)
     else:
-        source_year = pd.Series([file_year] * len(df_flat), index=df_flat.index, dtype='float64')
-
-    if parsed_date_year is not None:
-        # Prefer explicit election_year from source data; fall back to parsed date and then file year.
-        df_flat['row_election_year'] = source_year.fillna(parsed_date_year).fillna(file_year).astype(int)
-
-        # Keep election_date aligned with the authoritative row_election_year to avoid cross-cycle key collisions.
-        if parsed_dates is not None:
-            year_mismatch = parsed_dates.notna() & source_year.notna() & (parsed_date_year != source_year)
-            if year_mismatch.any():
-                aligned_dates = parsed_dates.copy()
-                month_day = parsed_dates.loc[year_mismatch].dt.strftime('%m-%d')
-                fixed_dates = pd.to_datetime(
-                    source_year.loc[year_mismatch].astype(int).astype(str) + '-' + month_day,
-                    errors='coerce'
-                )
-                aligned_dates.loc[year_mismatch] = fixed_dates.values
-                df_flat['election_date'] = aligned_dates.dt.strftime('%Y-%m-%d')
-    else:
-        df_flat['row_election_year'] = source_year.fillna(file_year).astype(int)
+        if 'election_year' in df_flat.columns:
+            df_flat['row_election_year'] = pd.to_numeric(df_flat['election_year'], errors='coerce').fillna(file_year).astype(int)
+        else:
+            df_flat['row_election_year'] = file_year
 
     # -------------------------------------------------------------------------
     # STEP A: DIMENSIONS
@@ -214,7 +188,6 @@ for file_name in sorted(target_files):
 
         df_wards_current = df_flat.sort_values(['clean_ward_code', 'row_election_year']).drop_duplicates(subset=['clean_ward_code'], keep='last')[['clean_ward_code', ward_name_col, 'derived_cc_code']].dropna()
 
-        # Resolve occasional source conflicts where a single wd_code/year has multiple ward names.
         history_base = df_flat[['clean_ward_code', ward_name_col, 'derived_cc_code', 'row_election_year']].dropna().copy()
         history_base = history_base.reset_index().rename(columns={'index': '_src_order'})
         history_ranked = (
@@ -239,6 +212,7 @@ for file_name in sorted(target_files):
             """), history_rows)
             conn.commit()
     except Exception as e:
+        print(f"   [ERROR STEP A] Dimension update skipped: {e}")
         continue
 
     # -------------------------------------------------------------------------
@@ -256,16 +230,16 @@ for file_name in sorted(target_files):
                 """), {"name": row['candidate_name'], "party": row['clean_party']})
             conn.commit()
     except Exception as e:
+        print(f"   [ERROR STEP B] Candidate listing skipped: {e}")
         continue
 
     # -------------------------------------------------------------------------
-    # STEP C: RESOLVE GENERATED DB KEYS (Corrected Clean Party Join)
+    # STEP C: RESOLVE GENERATED DB KEYS
     # -------------------------------------------------------------------------
     try:
         df_db_candidates = pd.read_sql("SELECT candidate_id, candidate_name, registered_party FROM candidates", con=engine)
         df_db_candidates = df_db_candidates.rename(columns={'candidate_id': 'resolved_candidate_id'})
         
-        # KEY SAFETY MIGRATION FIX: Join on the CLEAN party string, not the raw CSV string!
         df_flat['join_name'] = df_flat['candidate_name'].astype(str).str.lower().str.strip()
         df_flat['join_party'] = df_flat['clean_party'].astype(str).str.lower().str.strip()
         
@@ -284,6 +258,7 @@ for file_name in sorted(target_files):
             print(f"   [SKIP] Keys alignment matched 0 rows for {file_name}.")
             continue
     except Exception as e:
+        print(f"   [ERROR STEP C] Key mapping skipped: {e}")
         continue
 
     # -------------------------------------------------------------------------
@@ -302,16 +277,14 @@ for file_name in sorted(target_files):
         df_core_results = pd.DataFrame()
         df_core_results['wd_code'] = df_staged_results['clean_ward_code']
         df_core_results['candidate_id'] = pd.to_numeric(df_staged_results['resolved_candidate_id']).astype(int)
-
-        df_core_results['election_date'] = normalize_date_series(df_staged_results['election_date'])
+        df_core_results['election_date'] = df_staged_results['election_date']
+        
+        # Fallback date calculation for rows lacking timestamp metrics
         null_dates = df_core_results['election_date'].isna()
         if null_dates.any():
             df_core_results.loc[null_dates, 'election_date'] = df_staged_results.loc[null_dates, 'row_election_year'].apply(lambda y: f"{int(y)}-05-01")
 
-        core_dates = pd.to_datetime(df_core_results['election_date'], errors='coerce')
-        core_date_year = core_dates.dt.year
-        staged_year = pd.to_numeric(df_staged_results['row_election_year'], errors='coerce')
-        df_core_results['election_year'] = staged_year.fillna(core_date_year).fillna(file_year).astype(int)
+        df_core_results['election_year'] = df_staged_results['row_election_year']
         df_core_results['votes_received'] = pd.to_numeric(df_staged_results[vote_count_col].astype(str).str.replace(',', '', regex=False).str.replace(' Elected', '', regex=False), errors='coerce').fillna(0).astype(int) if vote_count_col else 0
         df_core_results['vote_share_value'] = pd.to_numeric(df_staged_results[vote_share_col].astype(str).str.replace('%', '', regex=False), errors='coerce').fillna(0.0) if vote_share_col else 0.0
         df_core_results['seats_available'] = pd.to_numeric(df_staged_results[seats_col], errors='coerce').fillna(1).astype(int) if seats_col else 1
@@ -323,6 +296,7 @@ for file_name in sorted(target_files):
 
         df_core_results = df_core_results.where(pd.notnull(df_core_results), None)
     except Exception as e:
+        print(f"   [ERROR STEP D] Metric transformation skipped: {e}")
         continue
 
     # -------------------------------------------------------------------------
@@ -350,6 +324,7 @@ for file_name in sorted(target_files):
             conn.commit()
         print(f"   Success! Ingested {len(result_rows):,} records.")
     except Exception as e:
+        print(f"   [ERROR STEP E] SQL Upsert Execution crashed: {e}")
         continue
 
 print("\n=============================================")
