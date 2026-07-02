@@ -1,6 +1,34 @@
 import os
 import pandas as pd
 
+
+def parse_election_date_series(series):
+    s = series.astype(str).str.strip()
+    s = s.replace({'': pd.NA, 'nan': pd.NA, 'None': pd.NA})
+    parsed = pd.Series(pd.NaT, index=s.index, dtype='datetime64[ns]')
+
+    # Parse year-first formats explicitly to avoid day/month inversion.
+    year_first_mask = s.str.match(r'^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$', na=False)
+    if year_first_mask.any():
+        parsed.loc[year_first_mask] = pd.to_datetime(
+            s.loc[year_first_mask],
+            format='mixed',
+            dayfirst=False,
+            errors='coerce',
+        )
+
+    # Parse remaining values with UK day-first priority.
+    remaining_mask = ~year_first_mask
+    if remaining_mask.any():
+        parsed.loc[remaining_mask] = pd.to_datetime(
+            s.loc[remaining_mask],
+            format='mixed',
+            dayfirst=True,
+            errors='coerce',
+        )
+
+    return parsed
+
 # 1. System Directory Configurations
 dc_folder = r"C:\Users\ianmi\Computer Programs\IRP-computer_program\data\democracy club"
 results_folder = r"C:\Users\ianmi\Computer Programs\IRP-computer_program\data\election_results\processed"
@@ -26,12 +54,14 @@ for dc_file in dc_files:
     # Clean keys for perfect alignment
     df_dc['person_id'] = df_dc['person_id'].astype(str).str.strip()
     df_dc['gss'] = df_dc['gss'].astype(str).str.strip()
-    df_dc['election_date'] = df_dc['election_date'].astype(str).str.strip()
+    parsed_dates = parse_election_date_series(df_dc['election_date'])
+    df_dc['election_date'] = parsed_dates.dt.strftime('%Y-%m-%d')
     
     # Populate the cross-reference dictionary: (candidate_id, wd_code) -> election_date
     for _, row in df_dc.iterrows():
         key = (row['person_id'], row['gss'])
-        master_date_map[key] = row['election_date']
+        if pd.notna(row['election_date']) and str(row['election_date']).strip() != '':
+            master_date_map[key] = row['election_date']
 
 print(f"\n[SUCCESS] Master Date Lookup built with {len(master_date_map):,} unique candidate-ward intersections.")
 print("----------------------------------------------------")

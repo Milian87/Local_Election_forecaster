@@ -1,4 +1,5 @@
 import os
+import glob
 import re
 import traceback
 import pandas as pd
@@ -31,6 +32,113 @@ def clean_party_string(val):
     }
     return mapping.get(s, str(val).strip())
 
+
+def parse_election_date_series(series):
+    """Return datetime-like parsed election date series using UK-first mixed parsing."""
+    s = series.astype(str).str.strip()
+    s = s.replace({'': pd.NA, 'nan': pd.NA, 'None': pd.NA})
+    parsed = pd.Series(pd.NaT, index=s.index, dtype='datetime64[ns]')
+
+    # Parse year-first formats explicitly to avoid day/month inversion (e.g. 2025-05-01).
+    year_first_mask = s.str.match(r'^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$', na=False)
+    if year_first_mask.any():
+        parsed.loc[year_first_mask] = pd.to_datetime(
+            s.loc[year_first_mask],
+            format='mixed',
+            dayfirst=False,
+            errors='coerce',
+        )
+
+    # Parse remaining values with UK day-first priority.
+    remaining_mask = ~year_first_mask
+    if remaining_mask.any():
+        parsed.loc[remaining_mask] = pd.to_datetime(
+            s.loc[remaining_mask],
+            format='mixed',
+            dayfirst=True,
+            errors='coerce',
+        )
+
+    return parsed
+
+
+COUNCIL_ALIASES = {
+    "Bedfordshire County Council": "Central Bedfordshire Council",
+    "Dorset County Council": "Dorset Council",
+    "Cumbria County Council": "Cumberland County Council",
+    "County Durham": "Durham County Council",
+    "Durham Council": "Durham County Council",
+    "Herefordshire County Council": "Herefordshire Council",
+    "Herefordshire, County of": "Herefordshire Council",
+    "Cornwall County Council": "Cornwall Council",
+    "Worestshire County Council": "Worcestershire County Council",
+}
+
+
+def normalize_council_name(value):
+    if pd.isna(value):
+        return ""
+    text = str(value).strip().lower()
+    text = text.replace("&", "and")
+    text = re.sub(r"[^a-z0-9 ]", "", text)
+    text = text.replace("county council", "")
+    text = text.replace("council", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def canonicalize_council_name(value):
+    if pd.isna(value):
+        return "Unknown Upper Tier Authority"
+    raw = str(value).strip()
+    if raw in COUNCIL_ALIASES:
+        return COUNCIL_ALIASES[raw]
+
+    normalized_alias_lookup = {
+        normalize_council_name(alias): canonical
+        for alias, canonical in COUNCIL_ALIASES.items()
+    }
+    return normalized_alias_lookup.get(normalize_council_name(raw), raw)
+
+
+def build_ward_authority_map(lookups_dir):
+    """Map WD/CED geography code to canonical authority code (CTY when present, else LAD)."""
+    ward_map = {}
+    composite_files = glob.glob(os.path.join(lookups_dir, "Ward_to_LAD_to_County_to_County_Electoral_Division_*.csv"))
+    flat_files = glob.glob(os.path.join(lookups_dir, "Ward_to_Local_Authority_District_*.csv"))
+    files = composite_files + flat_files
+
+    for file_path in files:
+        try:
+            sample = pd.read_csv(file_path, nrows=2, low_memory=False)
+            cols = sample.columns.tolist()
+            wd_col = next((c for c in cols if re.match(r'WD\d+CD', c) or c == 'WDCD'), None)
+            ced_col = next((c for c in cols if re.match(r'CED\d+CD', c) or c == 'CEDCD'), None)
+            lad_col = next((c for c in cols if re.match(r'LAD\d+CD', c) or c == 'LADCD'), None)
+            cty_col = next((c for c in cols if re.match(r'CTY\d+CD', c) or c == 'CTYCD'), None)
+            if not lad_col or (not wd_col and not ced_col):
+                continue
+            use_cols = [c for c in [wd_col, ced_col, lad_col, cty_col] if c]
+            df = pd.read_csv(file_path, usecols=use_cols, low_memory=False)
+
+            for _, row in df.iterrows():
+                lad_code = str(row[lad_col]).strip() if pd.notna(row[lad_col]) else ""
+                cty_code = str(row[cty_col]).strip() if cty_col and pd.notna(row[cty_col]) else ""
+                chosen_code = cty_code if cty_code and cty_code.lower() != "nan" else lad_code
+                if chosen_code and chosen_code.lower() != "nan":
+                    if wd_col and pd.notna(row.get(wd_col)):
+                        wd = str(row[wd_col]).strip()
+                        if wd:
+                            ward_map[wd] = chosen_code
+                    if ced_col and pd.notna(row.get(ced_col)):
+                        ced = str(row[ced_col]).strip()
+                        if ced:
+                            ward_map[ced] = chosen_code
+        except Exception:
+            continue
+
+    return ward_map
+
 # =========================================================================
 # 1. DATABASE CONNECTION MANAGEMENT PROFILE
 # =========================================================================
@@ -57,9 +165,18 @@ except OperationalError as exc:
 # =========================================================================
 # 2. FILE BATCH DIRECTORY SCANNING SETUP
 # =========================================================================
-input_folder = r"C:\Users\ianmi\Computer Programs\IRP-computer_program\data\election_results\processed"
+repo_root = os.path.dirname(os.path.abspath(__file__))
+default_input_folder = os.path.join(repo_root, "data", "election_results", "processed")
+
+# Prefer this workspace's processed exports; legacy path remains only as fallback.
+input_folder = os.getenv("RESULTS_INPUT_FOLDER", default_input_folder)
 if not os.path.exists(input_folder):
-    input_folder = r"C:\Users\ianmi\Computer Programs\IRP-computer_program"
+    legacy_folder = r"C:\Users\ianmi\Computer Programs\IRP-computer_program\data\election_results\processed"
+    input_folder = legacy_folder if os.path.exists(legacy_folder) else repo_root
+
+lookups_folder = r"C:\Users\ianmi\Computer Programs\Local_Election_forecaster\data\Lookups"
+ward_to_authority = build_ward_authority_map(lookups_folder)
+print(f"Loaded {len(ward_to_authority):,} ward->authority mappings for canonical cc_code assignment.")
 
 target_files = []
 try:
@@ -113,7 +230,7 @@ with engine.connect() as conn:
     )
     conn.commit()
 
-PURGE_ON_RUN = True
+PURGE_ON_RUN = os.getenv('PURGE_ON_RUN', 'false').strip().lower() in {'1', 'true', 'yes', 'y'}
 if PURGE_ON_RUN:
     print("[WARNING] Purging prior ingestion state to eliminate boundary alignment drift...")
     with engine.connect() as conn:
@@ -154,18 +271,22 @@ for file_name in sorted(target_files):
     df_flat['candidate_name'] = df_flat['candidate_name'].fillna('').astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
     df_flat['clean_party'] = df_flat[party_col].apply(clean_party_string)
     df_flat['clean_ward_code'] = df_flat[ward_code_col].fillna('').astype(str).str.strip()
-    df_flat['clean_council_name'] = df_flat[council_col].fillna('Unknown Upper Tier Authority').astype(str).str.strip() if council_col else 'Unknown Upper Tier Authority'
+    if council_col:
+        df_flat['clean_council_name'] = df_flat[council_col].apply(canonicalize_council_name)
+    else:
+        df_flat['clean_council_name'] = 'Unknown Upper Tier Authority'
     
     df_flat = df_flat[df_flat['candidate_name'] != ''].copy()
 
     # --- DATE PARSING FIX BLOCK ---
     date_col = locate_column(['election_date'], df_flat)
     if date_col:
-        # Evaluate row-by-row with strict priority to UK styles, avoiding NaT errors
-        parsed_dates = pd.to_datetime(df_flat[date_col], format='mixed', dayfirst=True, errors='coerce')
+        # Evaluate row-by-row with strict priority to UK styles, avoiding NaT errors.
+        parsed_dates = parse_election_date_series(df_flat[date_col])
         df_flat['election_date'] = parsed_dates.dt.strftime('%Y-%m-%d')
-        # Assign the TRUE dynamic year based on the parsed date string itself
-        df_flat['row_election_year'] = parsed_dates.dt.year.fillna(file_year).astype(int)
+        explicit_year = pd.to_numeric(df_flat['election_year'], errors='coerce') if 'election_year' in df_flat.columns else pd.Series(index=df_flat.index, dtype='float64')
+        # Assign dynamic year with explicit election_year taking precedence when present.
+        df_flat['row_election_year'] = explicit_year.fillna(parsed_dates.dt.year).fillna(file_year).astype(int)
     else:
         if 'election_year' in df_flat.columns:
             df_flat['row_election_year'] = pd.to_numeric(df_flat['election_year'], errors='coerce').fillna(file_year).astype(int)
@@ -176,7 +297,11 @@ for file_name in sorted(target_files):
     # STEP A: DIMENSIONS
     # -------------------------------------------------------------------------
     try:
-        df_flat['derived_cc_code'] = df_flat['clean_ward_code'].str[:3]
+        df_flat['derived_cc_code'] = df_flat['clean_ward_code'].map(ward_to_authority)
+        df_flat = df_flat[df_flat['derived_cc_code'].notna()].copy()
+        if len(df_flat) == 0:
+            print(f"   [SKIP] No ward->authority matches in {file_name}.")
+            continue
         df_counties = df_flat[['derived_cc_code', 'clean_council_name']].drop_duplicates().dropna()
         with engine.connect() as conn:
             county_rows = df_counties.rename(columns={'derived_cc_code': 'cc_code', 'clean_council_name': 'council_name'}).to_dict(orient='records')

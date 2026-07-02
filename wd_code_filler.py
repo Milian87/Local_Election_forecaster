@@ -3,8 +3,8 @@ import re
 import pandas as pd
 
 # 1. System Directory Configuration
-results_dir = r"C:\Users\ianmi\Computer Programs\IRP-computer_program\data\election_results\processed"
-lookups_dir = r"C:\Users\ianmi\Computer Programs\IRP-computer_program\data\Lookups"
+results_dir = r"C:\Users\ianmi\Computer Programs\Local_Election_forecaster\data\election_results\processed"
+lookups_dir = r"C:\Users\ianmi\Computer Programs\Local_Election_forecaster\data\Lookups"
 output_dir = r"C:\Users\ianmi\OneDrive\3 Masters Degree\Module 11 - Independant Research Project\Data\election results\clean_historical"
 
 os.makedirs(output_dir, exist_ok=True)
@@ -28,7 +28,6 @@ structural_synonyms = {
     ("Suffolk County Council", "Beccles & Kessingland"): "E58001264",
     ("Suffolk County Council", "St Margaret's"): "E58001247",
     ("Suffolk County Council", "Westgate"): "E58001247",
-    # Add any historical town variances encountered in your 2016-2020 loops here
     ("Cambridgeshire County Council", "St Neots Eaton Socon and Eynesbury"): "E58000097",
     ("Hampshire County Council", "Headley"): "E58000571",
     ("Gloucestershire County Council", "St Mark's and St Peter's"): "E58000488",
@@ -40,7 +39,7 @@ structural_synonyms = {
     ("Suffolk County Council", "St Helen's"): "E58001244",
     ("Suffolk County Council", "St John's"): "E58001244",
     ("Suffolk County Council", "St Margaret's and Westgate"): "E58001247",
-
+    
     # North Yorkshire County Council - 2022 structural remap synonyms
     ("North Yorkshire County Council", "Appleton Roebuck & Church Fenton"): "E58001047",
     ("North Yorkshire County Council", "Barlby & Riccall"): "E58001070",
@@ -69,8 +68,7 @@ structural_synonyms = {
     ("North Yorkshire County Council", "Washburn & Birstwith"): "E58001041"
 }
 
-# 2b. North Yorkshire 2022 targeted synonym matrix from Gemini guidance
-# Maps (Normalized Council Label, Democracy Club Ward Name) -> Official ONS CED code
+# 2b. North Yorkshire 2022/2026 targeted Unitary mapping dictionary
 north_yorkshire_synonyms = {
     ("North Yorkshire", "Aiskew & Leeming"): "E58001006",
     ("North Yorkshire", "Amotherby & Ampleforth"): "E58001007",
@@ -93,27 +91,28 @@ north_yorkshire_synonyms = {
     ("North Yorkshire", "Skipton West & West Craven"): "E58001065",
     ("North Yorkshire", "Stakesby"): "E58001077",
     ("North Yorkshire", "Thirsk"): "E58001071",
+    ("North Yorkshire Council", "Gaywood Clock"): "E58000986",
+    ("Norfolk", "Gaywood Clock"): "E58000986"
 }
 
 def normalize_string(val):
     if pd.isna(val): return ""
     s = str(val).lower()
     s = s.replace("&", "and")
-    s = s.replace(".", "")  # <-- CRITICAL: Strips out full stops so 'st.' matches 'st'
+    s = s.replace(".", "")
     s = s.replace("county council", "")
+    s = s.replace("council", "")
     s = s.replace(" ed", "")
     return "".join(s.split())
 
-# 3. Scan directories and inventory what files we have
+# 3. Inventory workspace files
 results_files = [f for f in os.listdir(results_dir) if f.startswith("target_council_results_") and f.endswith(".csv")]
-lookup_files = [f for f in os.listdir(lookups_dir) if f.startswith("Ward_to_LAD_to_County_") and f.endswith(".csv")]
+all_lookups = os.listdir(lookups_dir)
 
 print(f"Found {len(results_files)} results data tables to clean.")
-print(f"Found {len(lookup_files)} boundary reference lookups.")
 
 # 4. Ingestion Loop
 for r_file in sorted(results_files):
-    # Extract the target year from the results filename using regex
     year_match = re.search(r"\d{4}", r_file)
     if not year_match:
         continue
@@ -121,45 +120,59 @@ for r_file in sorted(results_files):
     
     print(f"\n[Processing Year {file_year}] --> File: {r_file}")
     
-    # Locate the best available ONS lookup match for this file's year
+# --- DYNAMIC MATRIX SELECTION BLOCK ---
     best_lookup = None
-    # Strategy: Find exact year match first
-    for l_file in lookup_files:
-        if f"({file_year})" in l_file or f"_{file_year}_" in l_file:
-            best_lookup = l_file
-            break
-            
-    # Fallback rules if exact match isn't present
-    if not best_lookup:
-        if file_year == 2022:
-            # North Yorkshire 2022 Unitary data lives in the Ward-to-LAD files
-            # Look for a 2022, 2023, or 2024 Ward_to_LAD lookup file in your folder
-            lad_options = [f for f in os.listdir(lookups_dir) if "Ward_to_LAD_" in f and f.endswith(".csv")]
-            if lad_options:
-                best_lookup = sorted(lad_options)[-1]  # Grabs the newest available Ward-to-LAD layout
-            else:
-                best_lookup = [f for f in lookup_files if "2018" in f or "2023" in f][0]
-        elif file_year in [2016, 2017]:
-            # Use 2017 for 2016 files as boundaries are contiguous
-            best_lookup = [f for f in lookup_files if "2017" in f][0]
-        elif file_year in [2019, 2020]:
-            # Use 2018 framework for intermediate cycles prior to post-2021 reorganizations
-            best_lookup = [f for f in lookup_files if "2018" in f][0]
+    is_unitary_mode = file_year in [2022, 2026]
+    
+    if is_unitary_mode:
+        # The fix: Ensure it look for files that map Wards directly to LADs without County divisions
+        lad_options = [
+            f for f in all_lookups 
+            if "Ward_to_LAD" in f 
+            and "County_Electoral_Division" not in f 
+            and f.endswith(".csv")
+        ]
+        if lad_options:
+            best_lookup = sorted(lad_options)[-1]  # Grab the most modern layout available
         else:
-            # Absolute baseline fallback: Use the closest chronological option available
-            best_lookup = sorted(lookup_files)[0]
-            
+            # Fall back to the 2025 division file if no pure Unitary file exists, 
+            # but force standard column parsing
+            best_lookup = [f for f in all_lookups if "May_2025" in f and f.endswith(".csv")][0]
+            is_unitary_mode = False 
+    else:
+        # Standard County Council / CED logic tracking
+        ced_options = [f for f in all_lookups if "County_Electoral_Division" in f and f.endswith(".csv")]
+        for l_file in ced_options:
+            if f"({file_year})" in l_file or f"_{file_year}_" in l_file:
+                best_lookup = l_file
+                break
+        if not best_lookup:
+            if file_year in [2016, 2017]:
+                best_lookup = [f for f in ced_options if "2017" in f][0]
+            elif file_year in [2019, 2020]:
+                best_lookup = [f for f in ced_options if "2018" in f][0]
+            else:
+                best_lookup = sorted(ced_options)[-1]
+                
     print(f"   Linking with Reference Matrix: {best_lookup}")
     
     # 5. Load Dataframes
     df_res = pd.read_csv(os.path.join(results_dir, r_file), low_memory=False)
     df_ons = pd.read_csv(os.path.join(lookups_dir, best_lookup), low_memory=False)
     
-    # 6. Dynamically locate structural headers inside the ONS file based on year shifts
+    # 6. Dynamically map columns depending on structural reorganisation state
     col_list = df_ons.columns.tolist()
-    cty_col = [c for c in col_list if "CTY" in c and "NM" in c][0]   # Dynamic County Name column
-    ced_code_col = [c for c in col_list if "CED" in c and "CD" in c][0] # Dynamic ED Code column
-    ced_name_col = [c for c in col_list if "CED" in c and "NM" in c][0] # Dynamic ED Name column
+    
+    if is_unitary_mode:
+        # Unitary authorities map codes at the District/Ward boundary intersection level
+        cty_col = [c for c in col_list if "LAD" in c and "NM" in c][0]   
+        ced_code_col = [c for c in col_list if "WD" in c and "CD" in c or "WARD" in c][0] 
+        ced_name_col = [c for c in col_list if "WD" in c and "NM" in c or "WARD" in c][0] 
+    else:
+        # Standard county tracking definitions
+        cty_col = [c for c in col_list if "CTY" in c and "NM" in c][0]   
+        ced_code_col = [c for c in col_list if "CED" in c and "CD" in c][0] 
+        ced_name_col = [c for c in col_list if "CED" in c and "NM" in c][0] 
     
     # 7. Compile Translation Dictionaries Natively
     df_ons['match_county'] = df_ons[cty_col].apply(normalize_string)
@@ -173,19 +186,25 @@ for r_file in sorted(results_files):
     # 8. Gap Filling Loop Execution
     def resolve_code_batch(row):
         council_raw = str(row['council_name'])
-        council = "North Yorkshire" if "yorkshire" in council_raw.lower() else council_raw
+        # Handle structural reorganisation renaming anomalies
+        if "yorkshire" in council_raw.lower():
+            council = "North Yorkshire" 
+        elif "west norfolk" in council_raw.lower() or "king's lynn" in council_raw.lower():
+            council = "Norfolk"
+        else:
+            council = council_raw
 
-        # 1) North Yorkshire LGR-specific synonym override
+        # 1) Unitary / LGR synonym override profile
         north_yorkshire_key = (council, row['ward_name'])
         if north_yorkshire_key in north_yorkshire_synonyms:
             return north_yorkshire_synonyms[north_yorkshire_key]
 
-        # 2) Existing hardcoded structural synonym override
+        # 2) Standard hardcoded structural synonym override
         hardcoded_key = (row['council_name'], row['ward_name'])
         if hardcoded_key in structural_synonyms:
             return structural_synonyms[hardcoded_key]
 
-        # 3) Standardized ONS lookup fallback
+        # 3) Dynamic ONS lookup fallback
         if pd.isna(row['wd_code']) or str(row['wd_code']).strip() == "" or str(row['wd_code']).lower() == "nan":
             lookup_key = (normalize_string(council), row['match_division'])
             return ons_dict.get(lookup_key, row['wd_code'])
@@ -199,10 +218,9 @@ for r_file in sorted(results_files):
     df_res = df_res.drop(columns=['match_county', 'match_division'])
     df_res['election_year'] = pd.to_numeric(df_res['election_year'], errors='coerce').fillna(file_year).astype(int)
     
-    # 10. Save Output back out
+    # 10. Save Output
     clean_out_name = f"target_council_results_{file_year}_clean.csv"
     df_res.to_csv(os.path.join(output_dir, clean_out_name), index=False)
-    # Also overwrite a local duplicate directly to your staging folder for immediate database upload use
     df_res.to_csv(os.path.join(results_dir, clean_out_name), index=False)
     
     print(f"   Success! Filled {initial_blanks - remaining_blanks} missing entries. Unresolved rows left: {remaining_blanks}")

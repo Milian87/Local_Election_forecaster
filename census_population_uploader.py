@@ -1,0 +1,129 @@
+import os
+import pandas as pd
+from sqlalchemy import create_engine, text
+
+# =========================================================================
+# 1. DATABASE CONNECTION SETUP
+# =========================================================================
+db_config = {
+    'host': os.getenv('MYSQL_HOST', 'localhost'),
+    'port': int(os.getenv('MYSQL_PORT', '3306')),
+    'user': os.getenv('MYSQL_USER', 'root'),
+    'password': os.getenv('MYSQL_PASSWORD', 'Xabp74yb%'),
+    'database': os.getenv('MYSQL_DB', 'irp_election_forecasting')
+}
+
+engine = create_engine(
+    f"mysql+pymysql://{db_config['user']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+)
+
+# =========================================================================
+# 2. SCHEMA DEFINITION & INITIALIZATION
+# =========================================================================
+print("🛠️ Initializing target database schema layers...")
+with engine.connect() as conn:
+    # Create a uniform population and surface area table mapping OAs cleanly
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS census_pop (
+            oa_code VARCHAR(20),
+            census_year INT,
+            total_population INT NOT NULL,
+            area_sq_km DECIMAL(12, 6) NOT NULL,
+            PRIMARY KEY (oa_code, census_year),
+            INDEX (oa_code),
+            INDEX (census_year)
+        ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+    """))
+    conn.commit()
+
+# =========================================================================
+# 3. PROCESSING: 2011 CENSUS DATASET (Source of land area profiles)
+# =========================================================================
+input_folder = r"C:\Users\ianmi\Computer Programs\Local_Election_forecaster\data\2011_census"
+file_2011 = os.path.join(input_folder, "2011Census_population.csv")
+area_mapping = {} # To keep track of OA geometry sizes
+
+if os.path.exists(file_2011):
+    print(f"📖 Processing {file_2011}...")
+    
+    # Read the file without headers (header=None) to process positionally, skipping the metadata rows
+    df_11 = pd.read_csv(file_2011, skiprows=7, header=None)
+    
+    processed_11 = []
+    for _, row in df_11.iterrows():
+        # Identify columns strictly by position to avoid text matching errors
+        oa = str(row[0]).strip()
+        
+        # Validation check: Ensure it looks like a valid Output Area code (starts with 'E')
+        if not oa.startswith('E') or len(oa) < 3:
+            continue
+            
+        try:
+            pop = int(float(str(row[2]).replace(',', '').strip()))
+            hectares = float(str(row[4]).replace(',', '').strip())
+            
+            # 1 Hectare = 0.01 Square Kilometers
+            sq_km = hectares * 0.01
+            area_mapping[oa] = sq_km
+            
+            processed_11.append({
+                'oa_code': oa,
+                'census_year': 2011,
+                'total_population': pop,
+                'area_sq_km': sq_km
+            })
+        except (ValueError, TypeError, KeyError):
+            # Gracefully skip any subtotal/footnote formatting blocks at the bottom
+            continue
+        
+    df_upload_11 = pd.DataFrame(processed_11)
+    if not df_upload_11.empty:
+        print(f"🚀 Uploading {len(df_upload_11):,} records from 2011 Census...")
+        df_upload_11.to_sql('census_pop', con=engine, if_exists='append', index=False, chunksize=5000)
+    else:
+        print("⚠️ No valid 2011 records were parsed. Verify row alignments.")
+else:
+    print(f"⚠️ Warning: {file_2011} not found in path.")
+
+# =========================================================================
+# 4. PROCESSING: 2021 CENSUS DATASET 
+# =========================================================================
+input_folder = r"C:\Users\ianmi\Computer Programs\Local_Election_forecaster\data\2021_census"
+file_2021 = os.path.join(input_folder, "2021Census_population.csv")
+
+if os.path.exists(file_2021):
+    print(f"📖 Processing {file_2021}...")
+    # Skip top metadata headers; data starts on row index 5
+    df_21 = pd.read_csv(file_2021, skiprows=5)
+    df_21.columns = ['total_population', 'oa_code']
+    df_21 = df_21.dropna(subset=['oa_code', 'total_population'])
+    
+    # Calculate a sensible regional default area (approx 0.25 sq km per typical OA)
+    # in case a 2021 OA doesn't map perfectly back to a 2011 boundary profile
+    fallback_area = 0.25 
+    
+    processed_21 = []
+    for _, row in df_21.iterrows():
+        oa = str(row['oa_code']).strip()
+        if not oa.startswith('E'):
+            continue
+            
+        pop = int(float(str(row['total_population']).replace(',', '')))
+        
+        # Pull exact area geometry matching the 2011 baseline, fallback if completely new
+        sq_km = area_mapping.get(oa, fallback_area)
+        
+        processed_21.append({
+            'oa_code': oa,
+            'census_year': 2021,
+            'total_population': pop,
+            'area_sq_km': sq_km
+        })
+        
+    df_upload_21 = pd.DataFrame(processed_21)
+    print(f"🚀 Uploading {len(df_upload_21):,} records from 2021 Census...")
+    df_upload_21.to_sql('census_pop', con=engine, if_exists='append', index=False, chunksize=5000)
+else:
+    print(f"⚠️ Warning: {file_2021} not found in path.")
+
+print("\n==================== DATA INGESTION COMPLETE ====================\n")
