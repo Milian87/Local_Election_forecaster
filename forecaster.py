@@ -347,6 +347,7 @@ print(f"📈 Automating predictions across {len(unique_norfolk_divisions)} Count
 for target_division in unique_norfolk_divisions:
     div_forecast = norfolk_future[norfolk_future['wd_code'] == target_division].copy()
     div_name = ward_name_map.get(target_division, target_division)
+    is_synthetic_division = bool(div_forecast.get('synthetic_division_fallback', pd.Series([0])).max() == 1)
     
     # Execute the 50/50 baseline blenders array calculations
     for idx, row in div_forecast.iterrows():
@@ -364,6 +365,29 @@ for target_division in unique_norfolk_divisions:
     else:
         div_forecast['normalized_forecast_share'] = 0.0
 
+    div_forecast = div_forecast.sort_values(by='final_forecast_share', ascending=False)
+
+    # Print full ward-style output for every Norfolk division.
+    fallback_title = " [fallback]" if is_synthetic_division else ""
+    print(f"\n🔮 Balanced Forecast Output for Ward: {div_name} ({target_division}){fallback_title}")
+    print("-" * 134)
+    print(
+        f"{'Ballot Entry (Candidate / Party Option)':<50} | {'Blended Baseline %':<20} | {'Raw Forecast %':<15} | {'Vote Share %':<12}"
+    )
+    print("-" * 134)
+
+    for _, row in div_forecast.iterrows():
+        label = f"{row['party_label']} [Blended Party Baseline]"
+        print(
+            f"{label:<50} | {row['predicted_party_share']:>18.2f}% | {row['final_forecast_share']:>13.2f}% | {row['normalized_forecast_share']:>10.2f}%"
+        )
+
+    print("-" * 134)
+    print(
+        f"{'Ward Totals':<50} | {'':<20} | {div_forecast['final_forecast_share'].sum():>13.2f}% | {div_forecast['normalized_forecast_share'].sum():>10.2f}%"
+    )
+    print("-" * 134)
+
     # Determine the seat winner based on plurality vote share (First-Past-The-Post system)
     winner_row = div_forecast.sort_values(by='normalized_forecast_share', ascending=False).iloc[0]
     winning_party = winner_row['party_label']
@@ -377,7 +401,7 @@ for target_division in unique_norfolk_divisions:
         'name': div_name,
         'winner': winning_party,
         'share': winning_margin,
-        'is_synthetic': bool(div_forecast.get('synthetic_division_fallback', pd.Series([0])).max() == 1),
+        'is_synthetic': is_synthetic_division,
     })
 
 # =========================================================================
