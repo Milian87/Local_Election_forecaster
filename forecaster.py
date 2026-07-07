@@ -3,11 +3,42 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from datetime import datetime
+from matplotlib.backends.backend_pdf import PdfPages
 from sqlalchemy import create_engine, text
 import shap
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
+
+try:
+    from docx import Document
+except Exception:
+    Document = None
+
+
+def write_text_lines_to_pdf(lines, output_path, lines_per_page=58):
+    """Render monospace text lines into a simple multi-page PDF report."""
+    with PdfPages(output_path) as pdf:
+        for start in range(0, len(lines), lines_per_page):
+            chunk = lines[start:start + lines_per_page]
+            fig = plt.figure(figsize=(8.27, 11.69))
+            fig.text(0.02, 0.98, "\n".join(chunk), va='top', ha='left', family='monospace', fontsize=8)
+            plt.axis('off')
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+
+
+def write_text_lines_to_docx(lines, output_path):
+    """Write plain text lines to a Word document when python-docx is installed."""
+    if Document is None:
+        return False
+    doc = Document()
+    doc.add_heading('Norfolk County Council Forecast Report', level=1)
+    for line in lines:
+        doc.add_paragraph(line)
+    doc.save(output_path)
+    return True
 
 # =========================================================================
 # DATA EXTRACTION LAYER
@@ -274,7 +305,15 @@ print("\n====================================================")
 print("📊 AUTOMATED COUNCIL-WIDE SUMMARY: NORFOLK COUNTY COUNCIL")
 print("====================================================")
 
+norfolk_report_lines = []
+
+
+def emit_norfolk(line=""):
+    print(line)
+    norfolk_report_lines.append(line)
+
 NORFOLK_CC_CODE = 'E10000020'
+NORFOLK_FALLBACK_MODE = os.getenv('NORFOLK_FALLBACK_MODE', 'true').strip().lower() in {'1', 'true', 'yes', 'y'}
 
 # 1. Rebuild lookup tracking structures from historical context data arrays
 party_historical_perf = (
@@ -300,7 +339,7 @@ norfolk_all_divisions = sorted([wd for wd, cc in ward_cc_map.items() if cc == NO
 norfolk_present_divisions = set(norfolk_future['wd_code'].astype(str).unique())
 norfolk_missing_divisions = [wd for wd in norfolk_all_divisions if wd not in norfolk_present_divisions]
 
-if norfolk_missing_divisions and len(norfolk_future) > 0:
+if NORFOLK_FALLBACK_MODE and norfolk_missing_divisions and len(norfolk_future) > 0:
     baseline_rows = norfolk_future.copy()
     baseline_rows['blended_base'] = (
         (baseline_rows['predicted_party_share'] * 0.5)
@@ -329,19 +368,21 @@ if norfolk_missing_divisions and len(norfolk_future) > 0:
 
     if synthetic_rows:
         norfolk_future = pd.concat([norfolk_future, pd.DataFrame(synthetic_rows)], ignore_index=True, sort=False)
-        print(
-            f"⚠️ [INFO] Applied forecast-only fallback for {len(norfolk_missing_divisions)} missing Norfolk divisions "
-            f"using county-wide party baselines."
+        emit_norfolk(
+            f"⚠️ [INFO] Applied forecast-only fallback for {len(norfolk_missing_divisions)} missing Norfolk divisions using county-wide party baselines."
         )
 else:
     norfolk_missing_divisions = []
+
+if not NORFOLK_FALLBACK_MODE:
+    emit_norfolk("⚠️ [INFO] NORFOLK_FALLBACK_MODE is disabled; missing divisions will not be synthesized.")
 
 # 3. Initialize bulk council tracking states
 seats_won = {}
 total_council_projections = []
 unique_norfolk_divisions = sorted(norfolk_future['wd_code'].unique())
 
-print(f"📈 Automating predictions across {len(unique_norfolk_divisions)} County Council Divisions...")
+emit_norfolk(f"📈 Automating predictions across {len(unique_norfolk_divisions)} County Council Divisions...")
 
 # 4. Process every division automatically without waiting for user input parameters
 for target_division in unique_norfolk_divisions:
@@ -369,24 +410,24 @@ for target_division in unique_norfolk_divisions:
 
     # Print full ward-style output for every Norfolk division.
     fallback_title = " [fallback]" if is_synthetic_division else ""
-    print(f"\n🔮 Balanced Forecast Output for Ward: {div_name} ({target_division}){fallback_title}")
-    print("-" * 134)
-    print(
+    emit_norfolk(f"\n🔮 Balanced Forecast Output for Ward: {div_name} ({target_division}){fallback_title}")
+    emit_norfolk("-" * 134)
+    emit_norfolk(
         f"{'Ballot Entry (Candidate / Party Option)':<50} | {'Blended Baseline %':<20} | {'Raw Forecast %':<15} | {'Vote Share %':<12}"
     )
-    print("-" * 134)
+    emit_norfolk("-" * 134)
 
     for _, row in div_forecast.iterrows():
         label = f"{row['party_label']} [Blended Party Baseline]"
-        print(
+        emit_norfolk(
             f"{label:<50} | {row['predicted_party_share']:>18.2f}% | {row['final_forecast_share']:>13.2f}% | {row['normalized_forecast_share']:>10.2f}%"
         )
 
-    print("-" * 134)
-    print(
+    emit_norfolk("-" * 134)
+    emit_norfolk(
         f"{'Ward Totals':<50} | {'':<20} | {div_forecast['final_forecast_share'].sum():>13.2f}% | {div_forecast['normalized_forecast_share'].sum():>10.2f}%"
     )
-    print("-" * 134)
+    emit_norfolk("-" * 134)
 
     # Determine the seat winner based on plurality vote share (First-Past-The-Post system)
     winner_row = div_forecast.sort_values(by='normalized_forecast_share', ascending=False).iloc[0]
@@ -409,24 +450,45 @@ for target_division in unique_norfolk_divisions:
 # =========================================================================
 df_summary = pd.DataFrame(total_council_projections).sort_values(by='name')
 
-print("\n🔮 INDIVIDUAL DIVISION PROJECTIONS (NORFOLK COUNTY COUNCIL 2026)")
-print("-" * 90)
-print(f"{'Division Code':<15} | {'Division Name':<35} | {'Predicted Winner':<20} | {'Margin %':<10}")
-print("-" * 90)
+emit_norfolk("\n🔮 INDIVIDUAL DIVISION PROJECTIONS (NORFOLK COUNTY COUNCIL 2026)")
+emit_norfolk("-" * 90)
+emit_norfolk(f"{'Division Code':<15} | {'Division Name':<35} | {'Predicted Winner':<20} | {'Margin %':<10}")
+emit_norfolk("-" * 90)
 for _, row in df_summary.iterrows():
     fallback_tag = " [fallback]" if bool(row.get('is_synthetic', False)) else ""
-    print(f"{row['code']:<15} | {str(row['name'])[:35]:<35} | {str(row['winner']) + fallback_tag:<20} | {row['share']:>8.2f}%")
-print("-" * 90)
+    line = f"{row['code']:<15} | {str(row['name'])[:35]:<35} | {str(row['winner']) + fallback_tag:<20} | {row['share']:>8.2f}%"
+    emit_norfolk(line)
+emit_norfolk("-" * 90)
 
-print("\n🏛️ FINAL SEAT PROJECTIONS SUMMARY MATRIX")
-print("-" * 45)
-print(f"{'Political Party Option Designation':<30} | {'Seats Won':<10}")
-print("-" * 45)
+emit_norfolk("\n🏛️ FINAL SEAT PROJECTIONS SUMMARY MATRIX")
+emit_norfolk("-" * 45)
+emit_norfolk(f"{'Political Party Option Designation':<30} | {'Seats Won':<10}")
+emit_norfolk("-" * 45)
 for party, seats in sorted(seats_won.items(), key=lambda item: item[1], reverse=True):
-    print(f"{party:<30} | {seats:>9}")
-print("-" * 45)
-print(f"{'Total Projected Seats Checked':<30} | {sum(seats_won.values()):>9}")
-print("-" * 45)
+    line = f"{party:<30} | {seats:>9}"
+    emit_norfolk(line)
+emit_norfolk("-" * 45)
+emit_norfolk(f"{'Total Projected Seats Checked':<30} | {sum(seats_won.values()):>9}")
+emit_norfolk("-" * 45)
+
+# Export Norfolk council output to PDF/Word report files.
+report_format = os.getenv('NORFOLK_REPORT_FORMAT', 'both').strip().lower()
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+reports_dir = os.path.join(os.path.dirname(__file__), 'data', 'election_results')
+os.makedirs(reports_dir, exist_ok=True)
+
+if report_format in {'pdf', 'both'}:
+    pdf_path = os.path.join(reports_dir, f'norfolk_forecast_{timestamp}.pdf')
+    write_text_lines_to_pdf(norfolk_report_lines, pdf_path)
+    print(f"📄 Norfolk forecast report written: {pdf_path}")
+
+if report_format in {'docx', 'both'}:
+    docx_path = os.path.join(reports_dir, f'norfolk_forecast_{timestamp}.docx')
+    docx_ok = write_text_lines_to_docx(norfolk_report_lines, docx_path)
+    if docx_ok:
+        print(f"📝 Norfolk forecast report written: {docx_path}")
+    else:
+        print("📝 Word export skipped: python-docx is not installed. Set NORFOLK_REPORT_FORMAT=pdf or install python-docx.")
 
 # Clear execution prompt lock allowing clean programmatic exit patterns
 while True:
