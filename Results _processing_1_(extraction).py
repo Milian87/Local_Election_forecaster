@@ -68,6 +68,35 @@ def _norm_geo_name(value):
     return text
 
 
+def _norm_division_name(value):
+    text = _norm_geo_name(value)
+    text = re.sub(r"\bed\b$", "", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+# Manual disambiguation for known county-division name collisions in 2026 source data.
+# Keys are normalized as (normalized council name, normalized ward/division label).
+MANUAL_COUNTY_CED_OVERRIDES = {
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Erpingham")): "E58001013",  # North Walsham West and Erpingham ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Hoveton")): "E58000995",   # Hoveton and Stalham ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Launditch")): "E58001009", # Necton and Launditch ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Stalham")): "E58000995",   # Hoveton and Stalham ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Coltishall & Spixworth")): "E58000992",      # Hevingham and Spixworth ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Dereham North & Scarning")): "E58000969",    # Dereham North ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Fakenham & The Raynhams")): "E58000980",     # Fakenham ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Nar & Wissey Valleys")): "E58000985",        # Gayton and Nar Valley ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("North Caister & Ormesby")): "E58000962",     # Caister-on-Sea ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("North Walsham West & Mundesley")): "E58001008",  # Mundesley ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("South Caister & Bure")): "E58000964",        # Clavering ED (best-fit)
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("The Fleggs")): "E58001034",                  # West Flegg ED (best-fit)
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Watlington & The Fens")): "E58000982",      # Fincham ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Waveney Valley")): "E58000977",              # East Flegg ED (best-fit)
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Yare & Necton")): "E58001038",               # Yare and All Saints ED
+    (_norm_council_name("Norfolk County Council"), _norm_division_name("Yare Valley")): "E58001018",                 # South Smallburgh ED (best-fit)
+}
+
+
 def _parse_election_dates(series):
     s = series.astype(str).str.strip()
     s = s.replace({'': pd.NA, 'nan': pd.NA, 'None': pd.NA})
@@ -252,6 +281,7 @@ def _build_current_county_ced_map(lookups_dir):
         return {}, {}
 
     grouped_codes = {}
+    division_name_codes = {}
     wd_to_ced = {}
     for _, row in df_lookup.iterrows():
         cty_name = str(row[cty_name_col]).strip() if pd.notna(row[cty_name_col]) else ""
@@ -267,6 +297,11 @@ def _build_current_county_ced_map(lookups_dir):
         if wd_code and wd_code.lower() != 'nan':
             wd_to_ced[(norm_council, wd_code)] = ced_code
 
+        if ced_name_col and pd.notna(row.get(ced_name_col)):
+            norm_division_name = _norm_division_name(row[ced_name_col])
+            if norm_division_name:
+                division_name_codes.setdefault((norm_council, norm_division_name), set()).add(ced_code)
+
         name_candidates = []
         if pd.notna(row.get(wd_name_col)):
             name_candidates.append(_norm_geo_name(row[wd_name_col]))
@@ -279,7 +314,8 @@ def _build_current_county_ced_map(lookups_dir):
             grouped_codes.setdefault((norm_council, norm_name), set()).add(ced_code)
 
     unique_name_map = {key: next(iter(codes)) for key, codes in grouped_codes.items() if len(codes) == 1}
-    return wd_to_ced, unique_name_map
+    unique_division_name_map = {key: next(iter(codes)) for key, codes in division_name_codes.items() if len(codes) == 1}
+    return wd_to_ced, unique_name_map, unique_division_name_map
 
 
 # Build normalized lookup so renamed/restructured councils can still match target scope.
@@ -307,11 +343,11 @@ print(f"Found {len(democracy_club_files)} CSV source file(s) inside: {input_fold
 lookup_by_council, lookup_unique_name = _build_lookup_geo_maps(lookups_folder)
 fallback_2025_map = _build_2025_fallback_map(fallback_2025_file)
 recent_history_maps = _build_recent_history_maps(output_folder_2)
-current_county_wd_to_ced_map, current_county_name_to_ced_map = _build_current_county_ced_map(lookups_folder)
+current_county_wd_to_ced_map, current_county_name_to_ced_map, current_county_division_name_to_ced_map = _build_current_county_ced_map(lookups_folder)
 print(f"Loaded {len(lookup_by_council):,} council+name lookup codes and {len(lookup_unique_name):,} globally unique name codes.")
 print(f"Loaded {len(fallback_2025_map):,} unique council+ward fallback codes from 2025 results.")
 print(f"Loaded recent history maps for {len(recent_history_maps):,} year file(s); lookback window set to {historical_fallback_years} years.")
-print(f"Loaded {len(current_county_wd_to_ced_map):,} latest county WD->CED mappings and {len(current_county_name_to_ced_map):,} latest county name->CED mappings.")
+print(f"Loaded {len(current_county_wd_to_ced_map):,} latest county WD->CED mappings, {len(current_county_name_to_ced_map):,} latest county name->CED mappings and {len(current_county_division_name_to_ced_map):,} exact division-name -> CED mappings.")
 
 # Master list to accumulate rows across all source files
 all_processed_rows = []
@@ -385,6 +421,27 @@ for file_name in democracy_club_files:
             index=df_filtered.index,
         )
         current_county_ced_series.loc[missing_current_ced] = fallback_name_series.loc[missing_current_ced]
+
+    missing_current_ced = current_county_ced_series.eq('')
+    if missing_current_ced.any():
+        division_keys = df_filtered['post_label'].map(_norm_division_name)
+        division_name_series = pd.Series(
+            [current_county_division_name_to_ced_map.get((c, d), '') for c, d in zip(council_keys, division_keys)],
+            index=df_filtered.index,
+        )
+        current_county_ced_series.loc[missing_current_ced] = division_name_series.loc[missing_current_ced]
+
+    # Final disambiguation for known ambiguous county ward names.
+    missing_current_ced = current_county_ced_series.eq('')
+    if missing_current_ced.any() and MANUAL_COUNTY_CED_OVERRIDES:
+        manual_series = pd.Series(
+            [
+                MANUAL_COUNTY_CED_OVERRIDES.get((c, d), '')
+                for c, d in zip(council_keys, df_filtered['post_label'].map(_norm_division_name))
+            ],
+            index=df_filtered.index,
+        )
+        current_county_ced_series.loc[missing_current_ced] = manual_series.loc[missing_current_ced]
     needs_county_ced = (
         df_filtered['election_year'].eq(2026)
         & current_county_ced_series.ne('')

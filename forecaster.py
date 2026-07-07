@@ -294,6 +294,48 @@ if norfolk_future.empty:
     # Fallback to evaluating all available division slots if filtered subset is empty
     norfolk_future = future_data.copy()
 
+# Forecast-only completion fallback: synthesize missing Norfolk divisions using
+# Norfolk-wide party baselines so council summary can still cover all 84 seats.
+norfolk_all_divisions = sorted([wd for wd, cc in ward_cc_map.items() if cc == NORFOLK_CC_CODE])
+norfolk_present_divisions = set(norfolk_future['wd_code'].astype(str).unique())
+norfolk_missing_divisions = [wd for wd in norfolk_all_divisions if wd not in norfolk_present_divisions]
+
+if norfolk_missing_divisions and len(norfolk_future) > 0:
+    baseline_rows = norfolk_future.copy()
+    baseline_rows['blended_base'] = (
+        (baseline_rows['predicted_party_share'] * 0.5)
+        + (baseline_rows['historical_party_ward_mean'] * 0.5)
+    )
+    party_baseline = (
+        baseline_rows
+        .groupby('party_label')['blended_base']
+        .mean()
+        .to_dict()
+    )
+
+    synthetic_rows = []
+    for wd_code in norfolk_missing_divisions:
+        for party, base_share in party_baseline.items():
+            synthetic_rows.append(
+                {
+                    'wd_code': wd_code,
+                    'party_label': party,
+                    'predicted_party_share': float(base_share),
+                    'historical_party_ward_mean': float(base_share),
+                    'final_forecast_share': float(base_share),
+                    'synthetic_division_fallback': 1,
+                }
+            )
+
+    if synthetic_rows:
+        norfolk_future = pd.concat([norfolk_future, pd.DataFrame(synthetic_rows)], ignore_index=True, sort=False)
+        print(
+            f"⚠️ [INFO] Applied forecast-only fallback for {len(norfolk_missing_divisions)} missing Norfolk divisions "
+            f"using county-wide party baselines."
+        )
+else:
+    norfolk_missing_divisions = []
+
 # 3. Initialize bulk council tracking states
 seats_won = {}
 total_council_projections = []
@@ -334,7 +376,8 @@ for target_division in unique_norfolk_divisions:
         'code': target_division,
         'name': div_name,
         'winner': winning_party,
-        'share': winning_margin
+        'share': winning_margin,
+        'is_synthetic': bool(div_forecast.get('synthetic_division_fallback', pd.Series([0])).max() == 1),
     })
 
 # =========================================================================
@@ -347,7 +390,8 @@ print("-" * 90)
 print(f"{'Division Code':<15} | {'Division Name':<35} | {'Predicted Winner':<20} | {'Margin %':<10}")
 print("-" * 90)
 for _, row in df_summary.iterrows():
-    print(f"{row['code']:<15} | {row['name']:<35} | {row['winner']:<20} | {row['share']:>8.2f}%")
+    fallback_tag = " [fallback]" if bool(row.get('is_synthetic', False)) else ""
+    print(f"{row['code']:<15} | {str(row['name'])[:35]:<35} | {str(row['winner']) + fallback_tag:<20} | {row['share']:>8.2f}%")
 print("-" * 90)
 
 print("\n🏛️ FINAL SEAT PROJECTIONS SUMMARY MATRIX")
