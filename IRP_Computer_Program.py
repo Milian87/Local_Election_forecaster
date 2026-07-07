@@ -6,18 +6,23 @@
 import sys
 import os
 from pathlib import Path
+
+
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import matplotlib
 from PySide6 import QtWidgets, QtCore, QtGui
 from IRP_GUIs import DashboardGUI, ForecastGUI, DataManagerGUI
 from widgets import ButtonWidget, blue_button_style, active_blue_button_style, red_button_style, green_button_style, FormRow, GaugeWidget
 from Data import SampleData
+from ForecasterClass import Forecaster
 from Controllers import DashboardController, ForecastController, DataManagerController, ScreenFactory
 
 
 class IRPComputerProgram:
     def __init__(self):
         # Initialize the program
+ #       self.forecaster = Forecaster()
+ #       self.forecaster.extract_and_prepare_data()
         self.data_source = SampleData()
         self.screen_name = "IRP Computer Program Main Dashboard"
         self.screen_titles = {
@@ -27,6 +32,7 @@ class IRPComputerProgram:
             "results_visualization": "Results Visualization & Analysis"
         }
         self.main_window = None
+        self.app = None
         self.factory = ScreenFactory()
         self.factory.register("Dashboard", DashboardGUI)
         self.factory.register("Forecasts", ForecastGUI)
@@ -99,7 +105,7 @@ class IRPComputerProgram:
 
         # Add a Layer 1 frame for the main content area on the right
         self.content_area = QtWidgets.QFrame()
-        self.content_area.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.content_area.setFrameShape(QtWidgets.QFrame.Shape.Panel)
         main_layout.addWidget(self.content_area)
 
         # add a vertical layout to the content area
@@ -126,23 +132,28 @@ class IRPComputerProgram:
             logo_path = project_root / "logo" / "app logo.ico"
         logo_pixmap = QtGui.QPixmap(str(logo_path))
         if not logo_pixmap.isNull():
-            logo_pixmap = logo_pixmap.scaled(125, 125, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+            logo_pixmap = logo_pixmap.scaled(
+                125,
+                125,
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
         top_layout.addWidget(QtWidgets.QLabel(pixmap=logo_pixmap))
         # add the app title and datetime to the top of the screen in a vertical layout
         title_layout = QtWidgets.QVBoxLayout()
         top_layout.addLayout(title_layout)
         title_label = QtWidgets.QLabel("IRP Computer Program")
-        title_label.setAlignment(QtCore.Qt.AlignLeft)
+        title_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         title_label.setStyleSheet("font-size: 24px; font-weight: bold;")
         title_layout.addWidget(title_label)
         top_layout.addStretch()  # Add a stretched label to push the datetime label to the left
         # add a stretched label to the title layout to push the datetime label to the left
 
         self.ui_title = QtWidgets.QLabel("Dashboard")  #<----------- find a way to make this dynamic based on the current screen
-        self.ui_title.setAlignment(QtCore.Qt.AlignLeft)
+        self.ui_title.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         self.ui_title.setStyleSheet("font-size: 24px; font-weight: bold; color: #555;")
         self.datetime_label = QtWidgets.QLabel(QtCore.QDateTime.currentDateTime().toString("dddd, MMMM d, yyyy - hh:mm:ss AP"))
-        self.datetime_label.setAlignment(QtCore.Qt.AlignLeft)
+        self.datetime_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         self.datetime_label.setStyleSheet("font-size: 14px; color: #777;")
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_time)
@@ -184,6 +195,11 @@ class IRPComputerProgram:
                     btn.set_style(blue_button_style)
     
     def run_app(self):
+        if self.main_window is None:
+            raise RuntimeError("Main window is not initialized. Call run() before run_app().")
+        if self.app is None:
+            raise RuntimeError("QApplication is not initialized. Call run() before run_app().")
+
         self.main_window.show()
         if self.owns_app:
             sys.exit(self.app.exec())

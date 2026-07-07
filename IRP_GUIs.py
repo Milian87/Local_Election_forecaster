@@ -17,6 +17,40 @@ from Data import SampleData
 from Controllers import DashboardController
 from Interfaces import ScreenInterface
 
+
+def _resolve_division_boundary_path(project_root: Path) -> Path:
+    """Prefer 2026 division boundaries, then 2025, then processed/local fallbacks."""
+    data_root = project_root / "data"
+
+    for year in ("2026", "2025"):
+        official_candidate = (
+            data_root
+            / f"County Electoral Division (May {year}) Boundaries EN BFE"
+            / f"CED_MAY_{year}_EN_BFC.shp"
+        )
+        if official_candidate.is_file():
+            print(f"[MAP SOURCE] Using official CED boundary file for {year}: {official_candidate}")
+            return official_candidate
+
+        # Flexible fallback: accept other CED shapefile naming conventions for the same year.
+        year_matches = sorted(
+            path
+            for path in data_root.rglob("*.shp")
+            if f"ced" in path.name.casefold() and year in str(path)
+        )
+        if year_matches:
+            print(f"[MAP SOURCE] Using discovered CED boundary file for {year}: {year_matches[0]}")
+            return year_matches[0]
+
+    processed_fallback = data_root / "processed" / "england_county_council_divisions.geojson"
+    if processed_fallback.is_file():
+        print(f"[MAP SOURCE] Falling back to processed England divisions file: {processed_fallback}")
+        return processed_fallback
+
+    local_fallback = project_root / "county_divisions.geojson"
+    print(f"[MAP SOURCE] Falling back to local county divisions file: {local_fallback}")
+    return local_fallback
+
 class BaseScreen(QtWidgets.QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -63,9 +97,9 @@ class DashboardGUI(BaseScreen):
         self.map_layout = QtWidgets.QHBoxLayout(self.map_frame)
         self.right_layout.addWidget(self.map_frame)
         
-        # Use the workspace GeoJSON directly (single-file boundary source).
+        # Build absolute paths from the project root so map loading works from any launch directory.
         project_root = Path(__file__).resolve().parent
-        ward_geojson_path = project_root / "county_divisions.geojson"
+        ward_geojson_path = _resolve_division_boundary_path(project_root)
 
         if not ward_geojson_path.is_file():
             print(f"[ERROR] Ward boundary GeoJSON not found: {ward_geojson_path}")

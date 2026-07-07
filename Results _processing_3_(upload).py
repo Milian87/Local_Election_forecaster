@@ -139,6 +139,318 @@ def build_ward_authority_map(lookups_dir):
 
     return ward_map
 
+
+def normalize_geo_name(value):
+    if pd.isna(value):
+        return ""
+    text = str(value).strip().lower()
+    text = text.replace("&", "and")
+    text = re.sub(r"[^a-z0-9 ]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def build_geography_name_code_maps(lookups_dir):
+    """Build name-based WD/CED fallback maps to recover rows where source gss is blank."""
+    name_with_authority = {}
+    name_with_council = {}
+    name_to_codes = {}
+
+    composite_files = glob.glob(os.path.join(lookups_dir, "Ward_to_LAD_to_County_to_County_Electoral_Division_*.csv"))
+    flat_files = glob.glob(os.path.join(lookups_dir, "Ward_to_Local_Authority_District_*.csv"))
+    files = composite_files + flat_files
+
+    for file_path in files:
+        try:
+            sample = pd.read_csv(file_path, nrows=2, low_memory=False)
+            cols = sample.columns.tolist()
+            wd_code_col = next((c for c in cols if re.match(r'WD\d+CD', c) or c == 'WDCD'), None)
+            wd_name_col = next((c for c in cols if re.match(r'WD\d+NM', c) or c == 'WDNM'), None)
+            ced_code_col = next((c for c in cols if re.match(r'CED\d+CD', c) or c == 'CEDCD'), None)
+            ced_name_col = next((c for c in cols if re.match(r'CED\d+NM', c) or c == 'CEDNM'), None)
+            lad_col = next((c for c in cols if re.match(r'LAD\d+CD', c) or c == 'LADCD'), None)
+            lad_name_col = next((c for c in cols if re.match(r'LAD\d+NM', c) or c == 'LADNM'), None)
+            cty_col = next((c for c in cols if re.match(r'CTY\d+CD', c) or c == 'CTYCD'), None)
+            cty_name_col = next((c for c in cols if re.match(r'CTY\d+NM', c) or c == 'CTYNM'), None)
+            if not lad_col:
+                continue
+
+            use_cols = [
+                c for c in [
+                    wd_code_col,
+                    wd_name_col,
+                    ced_code_col,
+                    ced_name_col,
+                    lad_col,
+                    lad_name_col,
+                    cty_col,
+                    cty_name_col,
+                ]
+                if c
+            ]
+            df = pd.read_csv(file_path, usecols=use_cols, low_memory=False)
+
+            for _, row in df.iterrows():
+                lad_code = str(row[lad_col]).strip() if pd.notna(row[lad_col]) else ""
+                cty_code = str(row[cty_col]).strip() if cty_col and pd.notna(row[cty_col]) else ""
+                chosen_authority = cty_code if cty_code and cty_code.lower() != "nan" else lad_code
+                if not chosen_authority or chosen_authority.lower() == "nan":
+                    continue
+
+                council_name_raw = ""
+                if cty_name_col and pd.notna(row.get(cty_name_col)):
+                    council_name_raw = str(row[cty_name_col]).strip()
+                elif lad_name_col and pd.notna(row.get(lad_name_col)):
+                    council_name_raw = str(row[lad_name_col]).strip()
+                normalized_council = normalize_council_name(council_name_raw) if council_name_raw else ""
+
+                geo_pairs = []
+                if wd_code_col and wd_name_col and pd.notna(row.get(wd_code_col)) and pd.notna(row.get(wd_name_col)):
+                    wd_code = str(row[wd_code_col]).strip()
+                    wd_name = normalize_geo_name(row[wd_name_col])
+                    if wd_code and wd_name:
+                        geo_pairs.append((wd_name, wd_code))
+                if ced_code_col and ced_name_col and pd.notna(row.get(ced_code_col)) and pd.notna(row.get(ced_name_col)):
+                    ced_code = str(row[ced_code_col]).strip()
+                    ced_name = normalize_geo_name(row[ced_name_col])
+                    if ced_code and ced_name:
+                        geo_pairs.append((ced_name, ced_code))
+
+                for norm_name, geo_code in geo_pairs:
+                    key = (norm_name, chosen_authority)
+                    if key not in name_with_authority:
+                        name_with_authority[key] = geo_code
+                    if normalized_council:
+                        council_key = (norm_name, normalized_council)
+                        if council_key not in name_with_council:
+                            name_with_council[council_key] = geo_code
+                    if norm_name not in name_to_codes:
+                        name_to_codes[norm_name] = set()
+                    name_to_codes[norm_name].add(geo_code)
+        except Exception:
+            continue
+
+    unique_name_map = {name: next(iter(codes)) for name, codes in name_to_codes.items() if len(codes) == 1}
+    return name_with_authority, name_with_council, unique_name_map
+
+
+def build_council_authority_map(lookups_dir):
+    """Map normalized council names to canonical authority code (CTY preferred, else LAD)."""
+    council_to_authority = {}
+    files = glob.glob(os.path.join(lookups_dir, "Ward_to_LAD_to_County_to_County_Electoral_Division_*.csv"))
+    files += glob.glob(os.path.join(lookups_dir, "Ward_to_Local_Authority_District_*.csv"))
+
+    for file_path in files:
+        try:
+            sample = pd.read_csv(file_path, nrows=2, low_memory=False)
+            cols = sample.columns.tolist()
+
+            cty_code_col = next((c for c in cols if re.match(r'CTY\d+CD', c) or c == 'CTYCD'), None)
+            cty_name_col = next((c for c in cols if re.match(r'CTY\d+NM', c) or c == 'CTYNM'), None)
+            lad_code_col = next((c for c in cols if re.match(r'LAD\d+CD', c) or c == 'LADCD'), None)
+            lad_name_col = next((c for c in cols if re.match(r'LAD\d+NM', c) or c == 'LADNM'), None)
+
+            use_cols = [c for c in [cty_code_col, cty_name_col, lad_code_col, lad_name_col] if c]
+            if not use_cols:
+                continue
+            df = pd.read_csv(file_path, usecols=use_cols, low_memory=False)
+
+            if cty_code_col and cty_name_col:
+                pairs = df[[cty_name_col, cty_code_col]].dropna().drop_duplicates().itertuples(index=False)
+                for name, code in pairs:
+                    norm_name = normalize_council_name(name)
+                    code_val = str(code).strip()
+                    if norm_name and code_val and code_val.lower() != 'nan':
+                        council_to_authority[norm_name] = code_val
+
+            if lad_code_col and lad_name_col:
+                pairs = df[[lad_name_col, lad_code_col]].dropna().drop_duplicates().itertuples(index=False)
+                for name, code in pairs:
+                    norm_name = normalize_council_name(name)
+                    code_val = str(code).strip()
+                    if norm_name and code_val and code_val.lower() != 'nan' and norm_name not in council_to_authority:
+                        council_to_authority[norm_name] = code_val
+        except Exception:
+            continue
+
+    return council_to_authority
+
+
+def lookup_file_year(file_path):
+    years = [int(value) for value in re.findall(r"20\d{2}", os.path.basename(file_path))]
+    return max(years) if years else 0
+
+
+def format_authority_name(raw_name, is_county):
+    name = str(raw_name).strip()
+    if not name:
+        return ""
+    if is_county:
+        return name if "council" in name.lower() else f"{name} County Council"
+    if any(token in name.lower() for token in ["council", "borough", "city"]):
+        return name
+    return f"{name} Council"
+
+
+def build_current_geography_rows(lookups_dir):
+    """Build the current electoral_wards seed set from the latest official lookup vintages."""
+    current_rows = {}
+    authority_names = {}
+
+    composite_files = glob.glob(os.path.join(lookups_dir, "Ward_to_LAD_to_County_to_County_Electoral_Division_*.csv"))
+    flat_files = glob.glob(os.path.join(lookups_dir, "Ward_to_Local_Authority_District_*.csv"))
+
+    latest_composite = max(composite_files, key=lookup_file_year) if composite_files else None
+    latest_flat = max(flat_files, key=lookup_file_year) if flat_files else None
+
+    if latest_composite:
+        sample = pd.read_csv(latest_composite, nrows=2, low_memory=False)
+        cols = sample.columns.tolist()
+        wd_code_col = next((c for c in cols if re.match(r'WD\d+CD', c) or c == 'WDCD'), None)
+        wd_name_col = next((c for c in cols if re.match(r'WD\d+NM', c) or c == 'WDNM'), None)
+        ced_code_col = next((c for c in cols if re.match(r'CED\d+CD', c) or c == 'CEDCD'), None)
+        ced_name_col = next((c for c in cols if re.match(r'CED\d+NM', c) or c == 'CEDNM'), None)
+        lad_code_col = next((c for c in cols if re.match(r'LAD\d+CD', c) or c == 'LADCD'), None)
+        lad_name_col = next((c for c in cols if re.match(r'LAD\d+NM', c) or c == 'LADNM'), None)
+        cty_code_col = next((c for c in cols if re.match(r'CTY\d+CD', c) or c == 'CTYCD'), None)
+        cty_name_col = next((c for c in cols if re.match(r'CTY\d+NM', c) or c == 'CTYNM'), None)
+
+        use_cols = [
+            c for c in [
+                wd_code_col,
+                wd_name_col,
+                ced_code_col,
+                ced_name_col,
+                lad_code_col,
+                lad_name_col,
+                cty_code_col,
+                cty_name_col,
+            ]
+            if c
+        ]
+        df = pd.read_csv(latest_composite, usecols=use_cols, low_memory=False)
+
+        for _, row in df.iterrows():
+            lad_code = str(row[lad_code_col]).strip() if lad_code_col and pd.notna(row[lad_code_col]) else ""
+            lad_name = str(row[lad_name_col]).strip() if lad_name_col and pd.notna(row[lad_name_col]) else ""
+            cty_code = str(row[cty_code_col]).strip() if cty_code_col and pd.notna(row[cty_code_col]) else ""
+            cty_name = str(row[cty_name_col]).strip() if cty_name_col and pd.notna(row[cty_name_col]) else ""
+
+            has_county = bool(cty_code and cty_code.lower() != 'nan')
+            if has_county and ced_code_col and ced_name_col and pd.notna(row.get(ced_code_col)) and pd.notna(row.get(ced_name_col)):
+                geo_code = str(row[ced_code_col]).strip()
+                geo_name = str(row[ced_name_col]).strip()
+                authority_code = cty_code
+                authority_name = format_authority_name(cty_name or lad_name, is_county=True)
+            elif wd_code_col and wd_name_col and pd.notna(row.get(wd_code_col)) and pd.notna(row.get(wd_name_col)):
+                geo_code = str(row[wd_code_col]).strip()
+                geo_name = str(row[wd_name_col]).strip()
+                authority_code = lad_code
+                authority_name = format_authority_name(lad_name or cty_name, is_county=False)
+            else:
+                continue
+
+            if not geo_code or not geo_name or not authority_code:
+                continue
+            current_rows[geo_code] = {
+                'wd_code': geo_code,
+                'ward_name': geo_name,
+                'cc_code': authority_code,
+            }
+            if authority_name:
+                authority_names[authority_code] = authority_name
+
+    if latest_flat:
+        sample = pd.read_csv(latest_flat, nrows=2, low_memory=False)
+        cols = sample.columns.tolist()
+        wd_code_col = next((c for c in cols if re.match(r'WD\d+CD', c) or c == 'WDCD'), None)
+        wd_name_col = next((c for c in cols if re.match(r'WD\d+NM', c) or c == 'WDNM'), None)
+        lad_code_col = next((c for c in cols if re.match(r'LAD\d+CD', c) or c == 'LADCD'), None)
+        lad_name_col = next((c for c in cols if re.match(r'LAD\d+NM', c) or c == 'LADNM'), None)
+
+        use_cols = [c for c in [wd_code_col, wd_name_col, lad_code_col, lad_name_col] if c]
+        if wd_code_col and wd_name_col and lad_code_col and lad_name_col:
+            df = pd.read_csv(latest_flat, usecols=use_cols, low_memory=False)
+            for _, row in df.iterrows():
+                geo_code = str(row[wd_code_col]).strip() if pd.notna(row[wd_code_col]) else ""
+                geo_name = str(row[wd_name_col]).strip() if pd.notna(row[wd_name_col]) else ""
+                authority_code = str(row[lad_code_col]).strip() if pd.notna(row[lad_code_col]) else ""
+                authority_name = format_authority_name(row[lad_name_col], is_county=False) if pd.notna(row[lad_name_col]) else ""
+
+                if not geo_code or not geo_name or not authority_code or geo_code in current_rows:
+                    continue
+                current_rows[geo_code] = {
+                    'wd_code': geo_code,
+                    'ward_name': geo_name,
+                    'cc_code': authority_code,
+                }
+                if authority_name and authority_code not in authority_names:
+                    authority_names[authority_code] = authority_name
+
+    return list(current_rows.values()), authority_names
+
+
+def sync_current_dimension_tables(engine, current_ward_rows, current_authority_names):
+    """Keep county_codes and electoral_wards aligned to the current official lookup layer."""
+    current_ward_codes = {row['wd_code'] for row in current_ward_rows if row.get('wd_code')}
+    current_authority_codes = {code for code, name in current_authority_names.items() if code and name}
+
+    with engine.connect() as conn:
+        if current_authority_names:
+            county_rows = [
+                {'cc_code': code, 'council_name': name}
+                for code, name in sorted(current_authority_names.items())
+                if code and name
+            ]
+            conn.execute(text("""
+                INSERT INTO county_codes (cc_code, council_name)
+                VALUES (:cc_code, :council_name)
+                ON DUPLICATE KEY UPDATE council_name = VALUES(council_name)
+            """), county_rows)
+
+        if current_ward_rows:
+            conn.execute(text("""
+                INSERT INTO electoral_wards (wd_code, ward_name, cc_code)
+                VALUES (:wd_code, :ward_name, :cc_code)
+                ON DUPLICATE KEY UPDATE ward_name = VALUES(ward_name), cc_code = VALUES(cc_code)
+            """), current_ward_rows)
+
+        existing_ward_codes = {
+            str(row[0]).strip()
+            for row in conn.execute(text("SELECT wd_code FROM electoral_wards")).fetchall()
+            if row[0]
+        }
+        stale_ward_codes = sorted(existing_ward_codes - current_ward_codes)
+        if stale_ward_codes:
+            conn.execute(
+                text("DELETE FROM electoral_wards WHERE wd_code = :wd_code"),
+                [{'wd_code': code} for code in stale_ward_codes],
+            )
+
+        existing_county_codes = {
+            str(row[0]).strip()
+            for row in conn.execute(text("SELECT cc_code FROM county_codes")).fetchall()
+            if row[0]
+        }
+        referenced_county_codes = {
+            str(row[0]).strip()
+            for row in conn.execute(text("SELECT DISTINCT cc_code FROM electoral_wards")).fetchall()
+            if row[0]
+        }
+        stale_county_codes = sorted(
+            code for code in (existing_county_codes - current_authority_codes)
+            if code not in referenced_county_codes
+        )
+        if stale_county_codes:
+            conn.execute(
+                text("DELETE FROM county_codes WHERE cc_code = :cc_code"),
+                [{'cc_code': code} for code in stale_county_codes],
+            )
+
+        conn.commit()
+
+    return len(current_ward_codes)
+
 # =========================================================================
 # 1. DATABASE CONNECTION MANAGEMENT PROFILE
 # =========================================================================
@@ -167,6 +479,11 @@ except OperationalError as exc:
 # =========================================================================
 repo_root = os.path.dirname(os.path.abspath(__file__))
 default_input_folder = os.path.join(repo_root, "data", "election_results", "processed")
+unresolved_report_path = os.getenv(
+    "UNRESOLVED_WARD_REPORT",
+    os.path.join(repo_root, "data", "election_results", "unresolved_ward_code_rows.csv"),
+)
+unresolved_drop_reports = []
 
 # Prefer this workspace's processed exports; legacy path remains only as fallback.
 input_folder = os.getenv("RESULTS_INPUT_FOLDER", default_input_folder)
@@ -176,7 +493,13 @@ if not os.path.exists(input_folder):
 
 lookups_folder = r"C:\Users\ianmi\Computer Programs\Local_Election_forecaster\data\Lookups"
 ward_to_authority = build_ward_authority_map(lookups_folder)
+name_authority_to_geo, name_council_to_geo, unique_name_to_geo = build_geography_name_code_maps(lookups_folder)
+council_lookup_to_authority = build_council_authority_map(lookups_folder)
+current_ward_rows, current_authority_names = build_current_geography_rows(lookups_folder)
 print(f"Loaded {len(ward_to_authority):,} ward->authority mappings for canonical cc_code assignment.")
+print(f"Loaded {len(name_authority_to_geo):,} name+authority geography fallbacks, {len(name_council_to_geo):,} name+council fallbacks and {len(unique_name_to_geo):,} unique name fallbacks.")
+print(f"Loaded {len(council_lookup_to_authority):,} council->authority lookup mappings.")
+print(f"Prepared {len(current_ward_rows):,} current official geographies for electoral_wards sync.")
 
 target_files = []
 try:
@@ -210,6 +533,12 @@ try:
                 {"schema_name": db_config['database']},
             ).fetchall()
         }
+
+        council_name_to_cc_code = {
+            normalize_council_name(row[1]): str(row[0]).strip()
+            for row in conn.execute(text("SELECT cc_code, council_name FROM county_codes")).fetchall()
+            if row[0] and row[1]
+        }
 except Exception as e:
     raise RuntimeError(f"FATAL: Database schema query failed. Error: {e}")
 
@@ -242,6 +571,9 @@ if PURGE_ON_RUN:
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 1;"))
         conn.commit()
     print("[SUCCESS] Relational staging baseline cleared.")
+
+synced_current_ward_count = sync_current_dimension_tables(engine, current_ward_rows, current_authority_names)
+print(f"[SUCCESS] electoral_wards synced to {synced_current_ward_count:,} current official geographies.")
 
 # =========================================================================
 # 3. CORE BATCH PROCESSING LOOP
@@ -297,22 +629,88 @@ for file_name in sorted(target_files):
     # STEP A: DIMENSIONS
     # -------------------------------------------------------------------------
     try:
+        blank_before = int(df_flat['clean_ward_code'].eq('').sum())
+        if blank_before > 0:
+            normalized_council_series = df_flat['clean_council_name'].map(normalize_council_name)
+            council_hints = df_flat['clean_council_name'].map(lambda x: council_lookup_to_authority.get(normalize_council_name(x), ""))
+            ward_name_norm = df_flat[ward_name_col].map(normalize_geo_name)
+
+            mask_blank = df_flat['clean_ward_code'].eq('')
+
+            # 1) Preferred: direct name match within the normalized council label.
+            council_scoped_fallback = ward_name_norm.combine(
+                normalized_council_series,
+                lambda n, c: name_council_to_geo.get((n, c), ""),
+            )
+            df_flat.loc[mask_blank, 'clean_ward_code'] = council_scoped_fallback.loc[mask_blank]
+
+            # 2) Next: name + authority code key.
+            mask_blank = df_flat['clean_ward_code'].eq('')
+            scoped_fallback = ward_name_norm.combine(council_hints, lambda n, cc: name_authority_to_geo.get((n, cc), ""))
+            df_flat.loc[mask_blank, 'clean_ward_code'] = scoped_fallback.loc[mask_blank]
+
+            # 3) Last resort: globally unique name only.
+            mask_still_blank = df_flat['clean_ward_code'].eq('')
+            unique_fallback = ward_name_norm.map(unique_name_to_geo)
+            df_flat.loc[mask_still_blank, 'clean_ward_code'] = unique_fallback.loc[mask_still_blank].fillna('')
+
+            blank_after = int(df_flat['clean_ward_code'].eq('').sum())
+            recovered = blank_before - blank_after
+            if recovered > 0:
+                print(f"   [INFO] Recovered {recovered:,} blank ward/division codes from lookup name fallback.")
+
+        unresolved_blank = int(df_flat['clean_ward_code'].eq('').sum())
+        if unresolved_blank > 0:
+            df_unresolved = df_flat[df_flat['clean_ward_code'].eq('')].copy()
+            unresolved_cols = [
+                'candidate_name',
+                'clean_party',
+                ward_name_col,
+                'clean_council_name',
+                ward_code_col,
+                'clean_ward_code',
+                'election_date',
+                'row_election_year',
+            ]
+            keep_cols = [c for c in unresolved_cols if c in df_unresolved.columns]
+            if keep_cols:
+                df_report_chunk = df_unresolved[keep_cols].copy()
+                df_report_chunk['source_file'] = file_name
+                unresolved_drop_reports.append(df_report_chunk)
+
+            print(f"   [WARNING] Dropping {unresolved_blank:,} rows with unresolved blank ward/division code.")
+            df_flat = df_flat[~df_flat['clean_ward_code'].eq('')].copy()
+            if len(df_flat) == 0:
+                print(f"   [SKIP] All rows unresolved after fallback in {file_name}.")
+                continue
+
         df_flat['derived_cc_code'] = df_flat['clean_ward_code'].map(ward_to_authority)
+
+        # Primary override from lookup-derived council authority map (CTY preferred).
+        council_cc_from_lookup = df_flat['clean_council_name'].map(
+            lambda x: council_lookup_to_authority.get(normalize_council_name(x), "")
+        )
+        has_lookup_cc = council_cc_from_lookup.astype(str).str.strip() != ''
+        df_flat.loc[has_lookup_cc, 'derived_cc_code'] = council_cc_from_lookup.loc[has_lookup_cc]
+
+        # Infer one authority code per council from rows that already mapped, then
+        # apply that hint to recovered rows to keep cc_code consistent within each council.
+        mapped_rows = df_flat[df_flat['derived_cc_code'].notna()].copy()
+        if len(mapped_rows) > 0:
+            council_cc_hint = (
+                mapped_rows
+                .groupby('clean_council_name')['derived_cc_code']
+                .agg(lambda s: s.value_counts().index[0])
+                .to_dict()
+            )
+            hinted_cc = df_flat['clean_council_name'].map(council_cc_hint)
+            has_hint = hinted_cc.notna()
+            df_flat.loc[has_hint, 'derived_cc_code'] = hinted_cc.loc[has_hint]
+
         df_flat = df_flat[df_flat['derived_cc_code'].notna()].copy()
         if len(df_flat) == 0:
             print(f"   [SKIP] No ward->authority matches in {file_name}.")
             continue
-        df_counties = df_flat[['derived_cc_code', 'clean_council_name']].drop_duplicates().dropna()
-        with engine.connect() as conn:
-            county_rows = df_counties.rename(columns={'derived_cc_code': 'cc_code', 'clean_council_name': 'council_name'}).to_dict(orient='records')
-            conn.execute(text("""
-                INSERT INTO county_codes (cc_code, council_name) VALUES (:cc_code, :council_name)
-                ON DUPLICATE KEY UPDATE council_name = VALUES(council_name)
-            """), county_rows)
-            conn.commit()
-
-        df_wards_current = df_flat.sort_values(['clean_ward_code', 'row_election_year']).drop_duplicates(subset=['clean_ward_code'], keep='last')[['clean_ward_code', ward_name_col, 'derived_cc_code']].dropna()
-
         history_base = df_flat[['clean_ward_code', ward_name_col, 'derived_cc_code', 'row_election_year']].dropna().copy()
         history_base = history_base.reset_index().rename(columns={'index': '_src_order'})
         history_ranked = (
@@ -324,17 +722,11 @@ for file_name in sorted(target_files):
         df_wards_history = history_ranked.drop_duplicates(subset=['clean_ward_code', 'row_election_year'], keep='first')[['clean_ward_code', ward_name_col, 'derived_cc_code', 'row_election_year']]
 
         with engine.connect() as conn:
-            ward_rows = df_wards_current.rename(columns={'clean_ward_code': 'wd_code', ward_name_col: 'ward_name', 'derived_cc_code': 'cc_code'}).to_dict(orient='records')
-            conn.execute(text("""
-                INSERT INTO electoral_wards (wd_code, ward_name, cc_code) VALUES (:wd_code, :ward_name, :cc_code)
-                ON DUPLICATE KEY UPDATE ward_name = VALUES(ward_name), cc_code = VALUES(cc_code)
-            """), ward_rows)
-            
             history_rows = df_wards_history.rename(columns={'clean_ward_code': 'wd_code', ward_name_col: 'ward_name', 'derived_cc_code': 'cc_code', 'row_election_year': 'election_year'}).to_dict(orient='records')
             conn.execute(text("""
                 INSERT INTO electoral_wards_history (wd_code, election_year, ward_name, cc_code) VALUES (:wd_code, :election_year, :ward_name, :cc_code)
                 ON DUPLICATE KEY UPDATE ward_name = VALUES(ward_name), cc_code = VALUES(cc_code)
-            """), history_rows)
+            """), history_rows) # type: ignore
             conn.commit()
     except Exception as e:
         print(f"   [ERROR STEP A] Dimension update skipped: {e}")
@@ -445,12 +837,41 @@ for file_name in sorted(target_files):
         result_rows = df_core_results.astype(object).where(pd.notnull(df_core_results), None).to_dict(orient='records')
         with engine.connect() as conn:
             for i in range(0, len(result_rows), 5000):
-                conn.execute(text(election_results_upsert_sql), result_rows[i:i+5000])
+                conn.execute(text(election_results_upsert_sql), result_rows[i:i+5000]) # type: ignore
             conn.commit()
         print(f"   Success! Ingested {len(result_rows):,} records.")
     except Exception as e:
         print(f"   [ERROR STEP E] SQL Upsert Execution crashed: {e}")
         continue
+
+if unresolved_drop_reports:
+    df_unresolved_report = pd.concat(unresolved_drop_reports, ignore_index=True)
+    rename_map = {
+        'clean_party': 'party_name',
+        'clean_council_name': 'council_name',
+        'clean_ward_code': 'resolved_ward_code_after_fallback',
+        'row_election_year': 'election_year',
+    }
+    df_unresolved_report = df_unresolved_report.rename(columns=rename_map)
+    ordered_cols = [
+        'source_file',
+        'election_year',
+        'election_date',
+        'council_name',
+        'ward_name',
+        'ward_code',
+        'resolved_ward_code_after_fallback',
+        'candidate_name',
+        'party_name',
+    ]
+    existing_order = [c for c in ordered_cols if c in df_unresolved_report.columns]
+    remaining_cols = [c for c in df_unresolved_report.columns if c not in existing_order]
+    df_unresolved_report = df_unresolved_report[existing_order + remaining_cols]
+    os.makedirs(os.path.dirname(unresolved_report_path), exist_ok=True)
+    df_unresolved_report.to_csv(unresolved_report_path, index=False)
+    dropped_2026 = int((df_unresolved_report['election_year'] == 2026).sum()) if 'election_year' in df_unresolved_report.columns else 0
+    print(f"[INFO] Wrote unresolved ward/division drop report: {unresolved_report_path}")
+    print(f"[INFO] Report rows: {len(df_unresolved_report):,} (2026 rows: {dropped_2026:,})")
 
 print("\n=============================================")
 print("🎯 Batch loading process finished.")

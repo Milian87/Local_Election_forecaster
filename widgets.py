@@ -7,11 +7,315 @@ from PySide6.QtGui import QColor
 import folium
 import geopandas as gpd
 import pandas as pd
+from branca.element import Element
 from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import os
+from pathlib import Path
+from datetime import datetime
+import re
 import uuid
 from PySide6 import QtCore
+
+# Map style constants so boundary appearance can be tuned in one place.
+DIVISION_FILL_COLOR = '#bdbdbd'
+DIVISION_EDGE_COLOR = '#3f3f3f'
+DIVISION_EDGE_WEIGHT = 1.0
+COUNCIL_BOUNDARY_COLOR = '#ff8c00'
+COUNCIL_BOUNDARY_WEIGHT = 3.2
+COUNCIL_BOUNDARY_OPACITY = 0.95
+
+
+def _normalized_label(value):
+    """Normalize free-text labels for robust council-name matching."""
+    if value is None:
+        return ''
+    text = str(value).strip().casefold()
+    text = re.sub(r'\b(electoral\s+division|division|ed)\b', ' ', text)
+    text = re.sub(r'[^a-z0-9]+', '', text)
+    return text
+
+
+def _pick_first_column(columns, candidates):
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def _guess_council_name_from_local(local_gdf, shp_path):
+    """Best-effort council name extraction from local boundary file fields or filename."""
+    district_col = _pick_first_column(local_gdf.columns, ['DistrictNa', 'District', 'DISTRICT'])
+    if district_col is not None:
+        district_values = [
+            value.strip()
+            for value in local_gdf[district_col].dropna().astype(str).unique()
+            if str(value).strip()
+        ]
+        if len(district_values) == 1:
+            return district_values[0]
+
+    stem = Path(shp_path).stem
+    stem = stem.replace('-', '_')
+    first_token = stem.split('_')[0].strip()
+    if first_token:
+        return first_token
+    return None
+
+
+def _find_council_field(gdf):
+    candidates = [
+        'authority_name',
+        'CTY26NM', 'CTY25NM', 'CTY24NM', 'CTY23NM',
+        'LAD26NM', 'LAD25NM', 'LAD24NM', 'LAD23NM',
+        'DISTRICT', 'District', 'DistrictNa'
+    ]
+    field = _pick_first_column(gdf.columns, candidates)
+    if field is not None:
+        return field
+
+    dynamic_candidates = [
+        col for col in gdf.columns
+        if re.fullmatch(r'(CTY|LAD)\d{2}NM', str(col).upper())
+    ]
+    return dynamic_candidates[0] if dynamic_candidates else None
+
+
+def _select_2026_division_shape_files(overrides_root):
+    selected = []
+    for shp in sorted(overrides_root.rglob('*.shp')):
+        file_name = shp.name.casefold()
+        full_path = str(shp).casefold()
+
+        # Ignore parish-ward files; keep electoral division/proposal layers.
+        if 'pw' in file_name or 'parish' in file_name:
+            continue
+        if not any(token in file_name for token in ('ed', 'electoral_division', 'proposal')):
+            continue
+
+        # Only accept explicit 2026 folders and reject stale files where mtime indicates earlier vintage.
+        if '2026' not in full_path:
+            continue
+        modified_year = datetime.fromtimestamp(shp.stat().st_mtime).year
+        if modified_year < 2026:
+            print(f"[MAP ENGINE] Skipping pre-2026 override file by modified date: {shp}")
+            continue
+
+        selected.append(shp)
+
+    return selected
+
+
+def _resolve_override_council_key(local_gdf, base_councils_gdf, base_key_set):
+    district_col = _pick_first_column(local_gdf.columns, ['DistrictNa', 'District', 'DISTRICT'])
+    if district_col is not None:
+        district_values = [
+            _normalized_label(value)
+            for value in local_gdf[district_col].dropna().astype(str).str.strip().unique()
+        ]
+        district_values = [value for value in district_values if value]
+        if len(district_values) == 1 and district_values[0] in base_key_set:
+            return district_values[0]
+
+    # Fallback to spatial overlap when council names differ across datasets.
+    try:
+        local_area_total = local_gdf.to_crs(epsg=27700).geometry.area.sum()
+        overlap = gpd.overlay(
+            local_gdf[['geometry']],
+            base_councils_gdf[['__council_key', 'geometry']],
+            how='intersection',
+            keep_geom_type=False,
+        )
+        if overlap.empty:
+            return None
+        overlap = overlap.to_crs(epsg=27700)
+        overlap['__overlap_area'] = overlap.geometry.area
+        overlap_by_key = overlap.groupby('__council_key')['__overlap_area'].sum()
+        top_key = str(overlap_by_key.idxmax())
+        top_area = float(overlap_by_key.max())
+        # Only trust spatial fallback when the file mostly overlaps one known council area.
+        if local_area_total <= 0:
+            return None
+        coverage_ratio = top_area / float(local_area_total)
+        if coverage_ratio < 0.60:
+            return None
+        return top_key if top_key in base_key_set else None
+    except Exception as ex:
+        print(f"[MAP ENGINE] WARNING: Council overlap matching failed: {ex}")
+        return None
+
+
+def _apply_local_2026_overrides(gdf_wards):
+    """Replace covered council areas with local 2026 boundaries; keep 2025 elsewhere."""
+    overrides_root = Path(__file__).resolve().parent / 'data' / '2026 Boundaries'
+    default_info = {
+        'applied_replacements': [],
+        'applied_additions': [],
+        'skipped_stale': [],
+        'skipped_unmatched': [],
+    }
+    if not overrides_root.is_dir():
+        gdf_wards.attrs['boundary_mix_info'] = default_info
+        return gdf_wards
+
+    council_field = _find_council_field(gdf_wards)
+    if council_field is None:
+        print("[MAP ENGINE] No council field found in base layer; skipping local 2026 overrides.")
+        gdf_wards.attrs['boundary_mix_info'] = default_info
+        return gdf_wards
+
+    base_gdf = gdf_wards.copy()
+    base_gdf[council_field] = base_gdf[council_field].astype(str).str.strip()
+
+    base_councils = base_gdf[[council_field, 'geometry']].dropna(subset=[council_field]).copy()
+    base_councils = base_councils[base_councils[council_field] != ''].copy()
+    if base_councils.empty:
+        return gdf_wards
+
+    base_councils = base_councils.dissolve(by=council_field, as_index=False)
+    base_councils['__council_key'] = base_councils[council_field].map(_normalized_label)
+    base_name_by_key = {
+        row['__council_key']: row[council_field]
+        for _, row in base_councils.iterrows()
+        if row['__council_key']
+    }
+    base_key_set = set(base_name_by_key.keys())
+
+    override_files = _select_2026_division_shape_files(overrides_root)
+    if not override_files:
+        print("[MAP ENGINE] No local 2026 override shapefiles found; using base boundaries.")
+        gdf_wards.attrs['boundary_mix_info'] = default_info
+        return gdf_wards
+
+    replacement_frames = []
+    additive_frames = []
+    replaced_keys = set()
+    applied_replacements = []
+    applied_additions = []
+    skipped_unmatched = []
+
+    for shp_path in override_files:
+        try:
+            local_gdf = gpd.read_file(shp_path)
+        except Exception as ex:
+            print(f"[MAP ENGINE] WARNING: Failed to read local override {shp_path}: {ex}")
+            continue
+
+        local_gdf = local_gdf[local_gdf.geometry.notna()].copy()
+        if local_gdf.empty:
+            continue
+        if local_gdf.crs is not None:
+            local_gdf = local_gdf.to_crs(epsg=4326)
+
+        guessed_council_name = _guess_council_name_from_local(local_gdf, shp_path)
+        guessed_council_key = _normalized_label(guessed_council_name)
+        council_key = _resolve_override_council_key(local_gdf, base_councils, base_key_set)
+        if not council_key and guessed_council_key in base_key_set:
+            council_key = guessed_council_key
+
+        division_col = _pick_first_column(
+            local_gdf.columns,
+            ['Division_n', 'Divison_na', 'Ward_name', 'WardName', 'Name', 'CED26NM']
+        )
+
+        replacement = local_gdf[['geometry']].copy()
+
+        if council_key:
+            resolved_council_name = base_name_by_key[council_key]
+        elif guessed_council_name:
+            resolved_council_name = guessed_council_name
+        else:
+            print(f"[MAP ENGINE] No base council match for local override: {shp_path}")
+            skipped_unmatched.append(str(shp_path))
+            continue
+
+        replacement[council_field] = resolved_council_name
+        replacement['authority_name'] = resolved_council_name
+
+        if division_col is not None:
+            clean_names = local_gdf[division_col].astype(str).str.strip()
+            clean_names = clean_names.str.replace(r'\s+(Electoral\s+Division|ED)\s*$', '', regex=True)
+            replacement['CED26NM'] = clean_names
+        else:
+            replacement['CED26NM'] = [f"{resolved_council_name} Division {idx + 1}" for idx in range(len(replacement))]
+
+        council_key_str = str(council_key if council_key else guessed_council_key)
+        replacement['CED26CD'] = [f"LOCAL26_{council_key_str[:8].upper()}_{idx + 1:03d}" for idx in range(len(replacement))]
+        if council_key:
+            replacement_frames.append(replacement)
+            replaced_keys.add(council_key)
+            applied_replacements.append(resolved_council_name)
+            print(f"[MAP ENGINE] Applied local 2026 override from {shp_path.name} for {resolved_council_name}.")
+        else:
+            additive_frames.append(replacement)
+            applied_additions.append(resolved_council_name)
+            print(f"[MAP ENGINE] Added local 2026 council from {shp_path.name}: {resolved_council_name}.")
+
+    if not replacement_frames and not additive_frames:
+        print("[MAP ENGINE] No local 2026 overrides were usable; using base boundaries.")
+        gdf_wards.attrs['boundary_mix_info'] = {
+            'applied_replacements': applied_replacements,
+            'applied_additions': applied_additions,
+            'skipped_stale': [],
+            'skipped_unmatched': skipped_unmatched,
+        }
+        return gdf_wards
+
+    base_mask = ~base_gdf[council_field].map(_normalized_label).isin(replaced_keys)
+    fallback_base = base_gdf[base_mask].copy()  # Keep 2025 rows where no 2026 override exists.
+    merged = pd.concat([fallback_base, *replacement_frames, *additive_frames], ignore_index=True)
+    merged = gpd.GeoDataFrame(merged, geometry='geometry', crs=base_gdf.crs)
+    print(f"[MAP ENGINE] Replaced {len(replaced_keys)} council area(s) with local 2026 boundaries.")
+    if additive_frames:
+        print(f"[MAP ENGINE] Added {len(applied_additions)} extra council override(s) not present in base layer.")
+    merged.attrs['boundary_mix_info'] = {
+        'applied_replacements': applied_replacements,
+        'applied_additions': applied_additions,
+        'skipped_stale': [],
+        'skipped_unmatched': skipped_unmatched,
+    }
+    return merged
+
+
+def _add_boundary_status_legend(folium_map, info):
+    replacements = sorted(set(info.get('applied_replacements', [])))
+    additions = sorted(set(info.get('applied_additions', [])))
+
+    replacement_text = ', '.join(replacements[:6])
+    if len(replacements) > 6:
+        replacement_text += f" (+{len(replacements) - 6} more)"
+    if not replacement_text:
+        replacement_text = 'None'
+
+    addition_text = ', '.join(additions[:6])
+    if len(additions) > 6:
+        addition_text += f" (+{len(additions) - 6} more)"
+    if not addition_text:
+        addition_text = 'None'
+
+    html = f"""
+    <div style="
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        z-index: 10000;
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid #bdbdbd;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 12px;
+        line-height: 1.35;
+        max-width: 360px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    ">
+      <div style="font-weight: 700; margin-bottom: 4px;">Boundary Source</div>
+      <div><span style="font-weight:600; color:#2e7d32;">2026 Replacement:</span> {replacement_text}</div>
+      <div><span style="font-weight:600; color:#1565c0;">2026 Added:</span> {addition_text}</div>
+      <div><span style="font-weight:600; color:#616161;">Fallback:</span> 2025 base for all other councils</div>
+    </div>
+    """
+    folium_map.get_root().html.add_child(Element(html))
 
 blue_button_style = """
     QPushButton {
@@ -111,7 +415,7 @@ class ButtonWidget:
         self.button.setMinimumHeight(40)  # ensure minimum height for round ends
         self.button.setMaximumHeight(40)  # fix height for consistent roundness
         self.button.setMinimumWidth(100)  # ensure wide pill shape
-        self.button.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)  # ADDED: allow horizontal expansion for pill shape
+        self.button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)  # ADDED: allow horizontal expansion for pill shape
         # REMOVED setMaximumWidth for flexibility
         shadow.setBlurRadius(8)
         shadow.setOffset(0, 2)
@@ -262,9 +566,9 @@ class HistoryTableWidget(QtWidgets.QTableWidget):
         header.setFixedHeight(50)
         self.history_table.setStyleSheet("QTableWidget::item { color: black; }")
         for col in range(len(headers)):
-            header.setSectionResizeMode(col, QtWidgets.QHeaderView.Stretch)
+            header.setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.history_table.show()
-        self.history_table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.history_table.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
 
         # add the history table to the history card
         history_layout.addWidget(self.history_table)
@@ -291,63 +595,138 @@ class Map:
             else:
                 print("[MAP ENGINE] WARNING: Ward CRS missing; treating as EPSG:4326.")
 
-            # ---- OPTIMIZATION FILTER ----
-            # Checks if ONS columns exist, filtering boundaries down to local council area
-            # This shaves your map data processing down from 7,000+ national entries to just your local region!
-            if 'LAD25NM' in gdf_wards.columns:
-                gdf_wards = gdf_wards[gdf_wards['LAD25NM'] == "King's Lynn and West Norfolk"]
-                print("Checked for LAD25NM column")
-            elif 'LAD24NM' in gdf_wards.columns:
-                gdf_wards = gdf_wards[gdf_wards['LAD24NM'] == "King's Lynn and West Norfolk"]
-                print("Checked for LAD24NM column")
-            elif 'LAD23NM' in gdf_wards.columns:
-                gdf_wards = gdf_wards[gdf_wards['LAD23NM'] == "King's Lynn and West Norfolk"]
-                print("Checked for LAD23NM column")
-            # -----------------------------
+            # If the source is a raw CED shapefile, enrich it with county metadata.
+            ced_code_cols = sorted(
+                [col for col in gdf_wards.columns if re.fullmatch(r'CED\d{2}CD', str(col).upper())],
+                reverse=True,
+            )
+            if ced_code_cols:
+                ced_code_col = ced_code_cols[0]
+                ced_suffix_match = re.search(r'(\d{2})', ced_code_col)
+                ced_suffix = ced_suffix_match.group(1) if ced_suffix_match else '25'
+                county_name_col = f'CTY{ced_suffix}NM'
+
+                if county_name_col not in gdf_wards.columns:
+                    csv_dir = os.path.join(os.path.dirname(__file__), 'data', 'csv')
+                    candidate_years = [f'20{ced_suffix}', '2025']  # Prefer same-vintage lookup, then 2025 fallback.
+                    lookup_candidates = []
+                    for year in candidate_years:
+                        lookup_candidates.extend([
+                            os.path.join(
+                                csv_dir,
+                                f'Ward_to_LAD_to_County_to_County_Electoral_Division_(May_{year})_Lookup_for_England.csv'
+                            ),
+                            os.path.join(
+                                csv_dir,
+                                f'Ward_to_LAD_to_County_to_County_Electoral_Division_(May {year})_Lookup_for_England.csv'
+                            ),
+                        ])
+
+                    if os.path.isdir(csv_dir):
+                        available_csv = sorted(
+                            os.path.join(csv_dir, name)
+                            for name in os.listdir(csv_dir)
+                            if name.lower().endswith('.csv') and 'county_electoral_division' in name.lower()
+                        )
+                        for year in candidate_years:
+                            lookup_candidates.extend([
+                                path for path in available_csv if year in os.path.basename(path)
+                            ])
+
+                    lookup_path = next((path for path in lookup_candidates if os.path.exists(path)), None)
+                    if lookup_path:
+                        lookup_header_cols = pd.read_csv(lookup_path, nrows=0).columns.tolist()
+                        lookup_ced_col = ced_code_col
+                        if lookup_ced_col not in lookup_header_cols:
+                            any_lookup_ced = [
+                                col for col in lookup_header_cols if re.fullmatch(r'CED\d{2}CD', str(col).upper())
+                            ]
+                            lookup_ced_col = any_lookup_ced[0] if any_lookup_ced else None
+
+                        if lookup_ced_col is not None:
+                            lookup_cols = [lookup_ced_col]
+                            preferred_fields = [
+                                f'CTY{ced_suffix}CD',
+                                f'CTY{ced_suffix}NM',
+                                f'LAD{ced_suffix}CD',
+                                f'LAD{ced_suffix}NM',
+                            ]
+                            for field in preferred_fields:
+                                if field in lookup_header_cols:
+                                    lookup_cols.append(field)
+
+                            # If same-vintage fields are missing, include whatever county/LAD name fields exist.
+                            if len(lookup_cols) == 1:
+                                lookup_cols.extend([
+                                    col
+                                    for col in lookup_header_cols
+                                    if re.fullmatch(r'(CTY|LAD)\d{2}(CD|NM)', str(col).upper())
+                                ])
+
+                            lookup_df = pd.read_csv(lookup_path, usecols=lookup_cols)
+                            lookup_df = lookup_df.dropna(subset=[lookup_ced_col]).copy()  # Keep rows with valid CED keys only.
+                            lookup_df[lookup_ced_col] = lookup_df[lookup_ced_col].astype(str).str.strip()  # Normalize join keys.
+                            lookup_df = lookup_df.drop_duplicates(subset=[lookup_ced_col])  # Keep one county mapping per CED.
+
+                            gdf_wards[ced_code_col] = gdf_wards[ced_code_col].astype(str).str.strip()  # Normalize shape keys before merge.
+                            gdf_wards = gdf_wards.merge(
+                                lookup_df,
+                                left_on=ced_code_col,
+                                right_on=lookup_ced_col,
+                                how='left',
+                            )  # Attach county fields for focus and overlays.
+                            print(f"[MAP ENGINE] Enriched CED layer using lookup: {os.path.basename(lookup_path)}")
+                        else:
+                            print(f"[MAP ENGINE] WARNING: No CED code column found in lookup file: {lookup_path}")
+                    else:
+                        print("[MAP ENGINE] WARNING: No CED lookup CSV found for metadata enrichment.")
+
+            # Apply any partial local 2026 council updates on top of the loaded base boundaries.
+            gdf_wards = _apply_local_2026_overrides(gdf_wards)
+            _add_boundary_status_legend(m, gdf_wards.attrs.get('boundary_mix_info', {}))
+
+            # Keep every division in the layer, but compute a separate Norfolk focus box for map centering.
+            norfolk_focus_bounds = None  # Stores [xmin, ymin, xmax, ymax] for Norfolk-only centering.
+            for county_col in ['CTY26NM', 'CTY25NM', 'CTY24NM', 'CTY23NM']:
+                if county_col in gdf_wards.columns:
+                    norfolk_rows = gdf_wards[
+                        gdf_wards[county_col].astype(str).str.strip().str.casefold() == 'norfolk'
+                    ]  # Select Norfolk rows only for focus, not for rendering.
+                    if not norfolk_rows.empty:
+                        norfolk_focus_bounds = norfolk_rows.total_bounds.tolist()  # Capture Norfolk extent for fit_bounds.
+                        print(f"[MAP ENGINE] Norfolk focus bounds detected using {county_col}.")
+                    break
+            if norfolk_focus_bounds is None:
+                print("[MAP ENGINE] No Norfolk county column found. Using full layer extent for map centering.")
+
             print(f"[MAP ENGINE] Loaded {len(gdf_wards):,} ward boundaries for mapping.")
-            print("Sample ward names in the dataset:\n", gdf_wards['WD25NM'].unique()[:16])
+            sample_name_col = None
+            for candidate in ['CED26NM', 'CED25NM', 'CED24NM', 'CED23NM', 'WD26NM', 'WD25NM', 'WD24NM', 'WD23NM']:
+                if candidate in gdf_wards.columns:
+                    sample_name_col = candidate
+                    break
+            if sample_name_col:
+                print("Sample division names in the dataset:\n", gdf_wards[sample_name_col].unique()[:16])
 
             if gdf_wards.empty:
                 print("[MAP ENGINE] WARNING: No valid ward geometries found. Skipping ward layer.")
             else:
                 # Inject interactive boundaries with tooltips
                 tooltip_field = None
-                for candidate in ['WD25NM', 'WD24NM', 'WD23NM']:
+                for candidate in ['CED26NM', 'CED25NM', 'CED24NM', 'CED23NM', 'WD26NM', 'WD25NM', 'WD24NM', 'WD23NM']:
                     if candidate in gdf_wards.columns:
                         tooltip_field = candidate
                         break
                 if tooltip_field is None and len(gdf_wards.columns) > 1:
                     tooltip_field = gdf_wards.columns[1]
-            
-                party_colors = {
-                    "Conservative": "#1f4e79",
-                    "Labour": "#d7191c",
-                    "Liberal Democrats": "#fdbf11",
-                    "Green Party": "#33a02c",
-                    "Reform UK": "#00b7eb",
-                }
-                winner_by_ward = {}
-
-                if isinstance(forecast_df, pd.DataFrame) and not forecast_df.empty:
-                    required_cols = {"ward", "party", "seats"}
-                    if required_cols.issubset(set(forecast_df.columns)):
-                        winners = forecast_df[["ward", "party", "seats"]].copy()
-                        winners["seats"] = pd.to_numeric(winners["seats"], errors="coerce").fillna(0)
-                        winners = winners.sort_values("seats", ascending=False).drop_duplicates("ward")
-                        winner_by_ward = dict(zip(winners["ward"], winners["party"]))
-
-                gdf_wards["winning_party"] = gdf_wards[tooltip_field].map(winner_by_ward).fillna("No data")
 
                 def style_fn(feature):
-                    props = feature.get("properties", {})
-                    ward_name = props.get(tooltip_field)
-                    winner = winner_by_ward.get(ward_name)
                     return {
-                        'fillColor': party_colors.get(winner, '#9e9e9e'),
-                        'color': '#1f1f1f',
-                        'weight': 1.8,
+                        'fillColor': DIVISION_FILL_COLOR,
+                        'color': DIVISION_EDGE_COLOR,
+                        'weight': DIVISION_EDGE_WEIGHT,
                         'opacity': 1.0,
-                        'fillOpacity': 0.45
+                        'fillOpacity': 0.35
                     }
 
                 geojson_kwargs = {
@@ -362,30 +741,58 @@ class Map:
                 }
                 if tooltip_field:
                     geojson_kwargs["tooltip"] = folium.GeoJsonTooltip(
-                        fields=[tooltip_field, "winning_party"],
-                        aliases=['Division:', 'Winning Party:'],
+                        fields=[tooltip_field],
+                        aliases=['Division:'],
                         localize=True
                     )
 
                 folium.GeoJson(gdf_wards, **geojson_kwargs).add_to(m)
-                ward_bounds = gdf_wards.total_bounds.tolist()
-                m.fit_bounds([[ward_bounds[1], ward_bounds[0]], [ward_bounds[3], ward_bounds[2]]])
 
-                if winner_by_ward:
-                    legend_html = """
-                    <div style="position: fixed; bottom: 20px; left: 20px; z-index: 9999; background: white; border: 2px solid #555; border-radius: 8px; padding: 10px; font-size: 12px;">
-                        <div style="font-weight: bold; margin-bottom: 6px;">Winning Party</div>
-                        <div><span style="display:inline-block;width:10px;height:10px;background:#1f4e79;margin-right:6px;"></span>Conservative</div>
-                        <div><span style="display:inline-block;width:10px;height:10px;background:#d7191c;margin-right:6px;"></span>Labour</div>
-                        <div><span style="display:inline-block;width:10px;height:10px;background:#fdbf11;margin-right:6px;"></span>Liberal Democrats</div>
-                        <div><span style="display:inline-block;width:10px;height:10px;background:#33a02c;margin-right:6px;"></span>Green Party</div>
-                        <div><span style="display:inline-block;width:10px;height:10px;background:#00b7eb;margin-right:6px;"></span>Reform UK</div>
-                        <div><span style="display:inline-block;width:10px;height:10px;background:#9e9e9e;margin-right:6px;"></span>No data</div>
-                    </div>
-                    """
-                    m.get_root().html.add_child(folium.Element(legend_html))
+                # Pick the best available council-name column from the loaded boundary file.
+                council_field = None
+                for candidate in ['authority_name', 'CTY26NM', 'CTY25NM', 'LAD26NM', 'LAD25NM', 'DISTRICT']:
+                    if candidate in gdf_wards.columns:
+                        council_field = candidate
+                        break
 
-# Open widgets.py and replace Section 3 inside create_map with this updated logic:
+                # Dissolve division polygons into council polygons so only council outlines are drawn.
+                if council_field is not None:
+                    gdf_councils = gdf_wards[gdf_wards[council_field].notna()].copy()  # Keep rows that can be grouped into councils.
+                    if not gdf_councils.empty:
+                        gdf_councils[council_field] = gdf_councils[council_field].astype(str).str.strip()  # Normalize council names before dissolve.
+                        gdf_councils = gdf_councils.dissolve(by=council_field, as_index=False)  # Merge all divisions per council into one boundary.
+
+                        # Overlay council boundaries with a stronger stroke and transparent fill.
+                        folium.GeoJson(
+                            gdf_councils,
+                            name="Council Boundaries",  # Layer name shown in map controls.
+                            style_function=lambda x: {
+                                'fillColor': '#00000000',  # Fully transparent fill so only outlines stand out.
+                                'color': COUNCIL_BOUNDARY_COLOR,  # Orange stroke to distinguish council edges from division edges.
+                                'weight': COUNCIL_BOUNDARY_WEIGHT,  # Thicker line to emphasize council boundary hierarchy.
+                                'opacity': COUNCIL_BOUNDARY_OPACITY
+                            },
+                            tooltip=folium.GeoJsonTooltip(
+                                fields=[council_field],
+                                aliases=['Council:'],
+                                localize=True
+                            )
+                        ).add_to(m)
+                        print(f"[MAP ENGINE] Added highlighted council boundary overlay using {council_field}.")
+                    else:
+                        print("[MAP ENGINE] No council rows available for highlighted boundary overlay.")
+                else:
+                    print("[MAP ENGINE] No council column found; skipping council boundary highlight overlay.")
+
+                if norfolk_focus_bounds is not None:
+                    # Center/zoom to Norfolk while still drawing all divisions across England.
+                    m.fit_bounds([
+                        [norfolk_focus_bounds[1], norfolk_focus_bounds[0]],
+                        [norfolk_focus_bounds[3], norfolk_focus_bounds[2]],
+                    ])
+                else:
+                    ward_bounds = gdf_wards.total_bounds.tolist()  # Fallback to national extent when Norfolk focus is unavailable.
+                    m.fit_bounds([[ward_bounds[1], ward_bounds[0]], [ward_bounds[3], ward_bounds[2]]])
 
         # 3. Add Output Areas Layer if provided (rendered with micro-borders)
         if oa_shp_path and os.path.exists(oa_shp_path):
@@ -395,7 +802,10 @@ class Map:
             # Ensure both geographic layers share the exact same spatial coordinate system
             if not gdf_wards.empty:
                 print("[MAP ENGINE] Aligning projections for target area isolation...")
-                gdf_oa = gdf_oa.to_crs(gdf_wards.crs)
+                if gdf_wards.crs is not None:
+                    gdf_oa = gdf_oa.to_crs(gdf_wards.crs)
+                else:
+                    print("[MAP ENGINE] WARNING: Ward CRS is missing; skipping OA reprojection.")
                 
                 print("[MAP ENGINE] Running adaptive geometric layout intersection...")
                 try:
@@ -426,7 +836,13 @@ class Map:
                 target_oa_field = 'OA21CD' if 'OA21CD' in oa_cols else (oa_cols[0] if len(oa_cols) > 0 else None)
                 
                 print(f"[MAP ENGINE] Success! Filtered {len(gdf_oa):,} micro-local Output Areas for display.")
-                print("names of wards in the map:\n", gdf_wards['WD25NM'].unique())
+                debug_name_col = None
+                for candidate in ['CED25NM', 'CED24NM', 'CED23NM', 'WD25NM', 'WD24NM', 'WD23NM']:
+                    if candidate in gdf_wards.columns:
+                        debug_name_col = candidate
+                        break
+                if debug_name_col:
+                    print("names of divisions in the map:\n", gdf_wards[debug_name_col].unique())
                 if target_oa_field:
                     folium.GeoJson(
                         gdf_oa,
@@ -485,26 +901,26 @@ class GaugeWidget(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(10, 10, self.width()-20, self.height()-20)
 
         # Draw background arc
-        pen = QPen(Qt.lightGray, 15)
+        pen = QPen(Qt.GlobalColor.lightGray, 15)
         painter.setPen(pen)
         painter.drawArc(rect, 45*16, 270*16)
 
         # Draw value arc
-        pen.setColor(Qt.blue)
+        pen.setColor(Qt.GlobalColor.blue)
         painter.setPen(pen)
         span_angle = int(270 * (self.value - self.min_value) / (self.max_value - self.min_value))
         painter.drawArc(rect, 45*16, -span_angle*16)
 
         # Draw value text
-        painter.setPen(Qt.black)
-        font = QFont("Arial", int(self.textsize), QFont.Bold)
+        painter.setPen(Qt.GlobalColor.black)
+        font = QFont("Arial", int(self.textsize), QFont.Weight.Bold)
         painter.setFont(font)
         value_str = f"{self.value}%"
-        painter.drawText(rect, Qt.AlignCenter | Qt.AlignTop, value_str)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop, value_str)
 
 
 
