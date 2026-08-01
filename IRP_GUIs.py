@@ -16,10 +16,17 @@ from widgets import ButtonWidget, blue_button_style, active_blue_button_style, r
 from Data import SampleData
 from Controllers import DashboardController
 from Interfaces import ScreenInterface
+from GlobalState import map_orchestrator
+
+# Inside your GUI class:
+map_orchestrator = map_orchestrator
+web_map_view = map_orchestrator.generate_live_viewport(...)
 
 
 def _resolve_division_boundary_path(project_root: Path) -> Path:
-    """Prefer 2026 division boundaries, then 2025, then processed/local fallbacks."""
+    """
+    Resolve an England-wide divisions layer first, then fall back safely.
+    """
     data_root = project_root / "data"
 
     for year in ("2026", "2025"):
@@ -29,27 +36,27 @@ def _resolve_division_boundary_path(project_root: Path) -> Path:
             / f"CED_MAY_{year}_EN_BFC.shp"
         )
         if official_candidate.is_file():
-            print(f"[MAP SOURCE] Using official CED boundary file for {year}: {official_candidate}")
+            print(f"[MAP ENGINE] Using official England-wide CED boundary layer: {official_candidate.name}")
             return official_candidate
 
-        # Flexible fallback: accept other CED shapefile naming conventions for the same year.
-        year_matches = sorted(
-            path
-            for path in data_root.rglob("*.shp")
-            if f"ced" in path.name.casefold() and year in str(path)
-        )
-        if year_matches:
-            print(f"[MAP SOURCE] Using discovered CED boundary file for {year}: {year_matches[0]}")
-            return year_matches[0]
+    all_shapefiles = list(data_root.rglob("*.shp"))
+    england_candidates = []
+    for path in all_shapefiles:
+        path_lower = str(path).lower()
+        name_lower = path.name.lower()
+        if "england" in path_lower and any(tok in name_lower for tok in ["ced", "division", "county"]):
+            england_candidates.append(path)
+    if england_candidates:
+        chosen = sorted(england_candidates)[0]
+        print(f"[MAP ENGINE] Fallback to England-wide discovered layer: {chosen.name}")
+        return chosen
 
-    processed_fallback = data_root / "processed" / "england_county_council_divisions.geojson"
-    if processed_fallback.is_file():
-        print(f"[MAP SOURCE] Falling back to processed England divisions file: {processed_fallback}")
-        return processed_fallback
+    for path in all_shapefiles:
+        if "ced" in path.name.lower():
+            print(f"[MAP ENGINE] Fallback to generic CED layer: {path.name}")
+            return path
 
-    local_fallback = project_root / "county_divisions.geojson"
-    print(f"[MAP SOURCE] Falling back to local county divisions file: {local_fallback}")
-    return local_fallback
+    return project_root / "county_divisions.geojson"
 
 class BaseScreen(QtWidgets.QFrame):
     def __init__(self, parent=None):
@@ -62,61 +69,59 @@ class DashboardGUI(BaseScreen):
     def __init__(self, parent_layout, controller, label_text, main_window=None):
         super().__init__()
         self.controller = controller
-        # Initialize the Dashboard GUI
-        # Create the Level 1 Horizontal frame and layout
+        
+        # Initialize the Dashboard GUI Main Layout Frame Workspace
         self.frame = QtWidgets.QFrame()
         self.frame.setStyleSheet("background-color: #f0f0f0; border-radius: 10px;")
         self.dashboard_layout = QtWidgets.QHBoxLayout(self.frame)
         parent_layout.addWidget(self.frame)
 
-        # create a level 2 vertical frame and layout for the left side of the dashboard
+        # Left Column Layout Frame (Summary Cards & Statistical Tables)
         self.left_frame = QtWidgets.QFrame()
         self.left_frame.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
         self.left_layout = QtWidgets.QVBoxLayout(self.left_frame)
         self.dashboard_layout.addWidget(self.left_frame)
-        # create a level 2 vertical frame and layout for the right side of the dashboard
+        
+        # Right Column Layout Frame (Viewport Canvas Allocation)
         self.right_frame = QtWidgets.QFrame()
         self.right_frame.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
         self.right_layout = QtWidgets.QVBoxLayout(self.right_frame)
-        # make the right frame to be a set width for better visualization of the map and summary statistics
         self.right_frame.setFixedWidth(750)
         self.dashboard_layout.addWidget(self.right_frame)
 
-        # add a level 3 horizontal summary frame and layout to the top of the left side of the dashboard
+        # Populate Left Column Interface Dashboard Panels
         self.summary_frame1 = self.create_overall_summary()
         self.left_layout.addWidget(self.summary_frame1)
 
-        # add a level 3 horizontal summary frame and layout to the bottom of the left side of the dashboard
         self.summary_frame2 = self.create_detailed_summary()
         self.left_layout.addWidget(self.summary_frame2)
 
-
-        # add a level 3 horizontal summary frame and layout to hold a map on the right side of the dashboard
+        # Allocate Viewport Frame Container for the Map Engine
         self.map_frame = QtWidgets.QFrame()
         self.map_frame.setStyleSheet("background-color: #f9f9f9; border-radius: 10px;")
         self.map_layout = QtWidgets.QHBoxLayout(self.map_frame)
         self.right_layout.addWidget(self.map_frame)
         
-        # Build absolute paths from the project root so map loading works from any launch directory.
+        # Build absolute reference paths to your regional vector boundary layers
         project_root = Path(__file__).resolve().parent
-        ward_geojson_path = _resolve_division_boundary_path(project_root)
+        boundary_path = str(_resolve_division_boundary_path(project_root))
 
-        if not ward_geojson_path.is_file():
-            print(f"[ERROR] Ward boundary GeoJSON not found: {ward_geojson_path}")
-        else:
-            print(f"[SUCCESS] Ward boundary GeoJSON found: {ward_geojson_path}")
+        # 🚀 HOOK INTO THE NEW MAP ENGINE (DISSOLVED COUNCIL MODE)
+        try:
+            from MapOrchestrator import MapOrchestrator
+            self.map_orchestrator = MapOrchestrator(boundary_path)
+            
+            # Fetch live prediction frames and dissolve geometries to council-level outlines
+            self.web_map_view = self.map_orchestrator.generate_live_viewport(
+                forecast_df=self.controller.get_forecast_data(),
+                view_mode="council"
+            )
+        except Exception as e:
+            print(f"❌ [GUI ERROR] Dashboard council map initialization failed: {e}")
+            # Structural fallback to standard placeholder labels if data dependencies miss
+            self.web_map_view = QtWidgets.QLabel(f"Map Rendering Error:\n{e}")
+            self.web_map_view.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        # Optional OA layer is disabled when running from a single GeoJSON input.
-        oa_shp_path = None
-
-        
-        # add a map widget to the map frame to display the predicted election results by ward (placeholder for now)
-        maps = Map(self.map_frame)
-        self.web_map_view = maps.create_map(
-            ward_shp_path=str(ward_geojson_path),
-            oa_shp_path=oa_shp_path,
-            forecast_df=self.controller.get_forecast_data()
-        )
         self.map_layout.addWidget(self.web_map_view)
 
     def create_overall_summary(self):
@@ -256,43 +261,50 @@ class ForecastGUI(BaseScreen):
     def __init__(self, parent_layout, controller, label_text, main_window=None):
         super().__init__()
         self.controller = controller
-        # Initialize the Dashboard GUI
-        # Create the Level 1 Horizontal frame and layout
+        
+        # Initialize the Forecasts Main UI Grid Workspace Framework
         self.frame = QtWidgets.QFrame()
         self.frame.setStyleSheet("background-color: #f0f0f0; border-radius: 10px;")
         self.dashboard_layout = QtWidgets.QHBoxLayout(self.frame)
         parent_layout.addWidget(self.frame)
 
-        # create a level 2 vertical frame and layout for the left side of the dashboard
+        # Left Sidebar Column Frame Allocation
         self.left_frame = QtWidgets.QFrame()
         self.left_frame.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
         self.left_layout = QtWidgets.QVBoxLayout(self.left_frame)
         self.dashboard_layout.addWidget(self.left_frame)
-        # create a level 2 vertical frame and layout for the right side of the dashboard
+        
+        # Right Viewport Map Canvas Layout Frame Allocation
         self.right_frame = QtWidgets.QFrame()
         self.right_frame.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
         self.right_layout = QtWidgets.QVBoxLayout(self.right_frame)
-        # make the right frame to be a set width for better visualization of the map and summary statistics
         self.right_frame.setFixedWidth(750)
         self.dashboard_layout.addWidget(self.right_frame)
 
-        # add a level 3 horizontal summary frame and layout to hold a map on the right side of the dashboard
+        # Allocate Viewport Frame Container for the Map Engine
         self.map_frame = QtWidgets.QFrame()
         self.map_frame.setStyleSheet("background-color: #f9f9f9; border-radius: 10px;")
         self.map_layout = QtWidgets.QHBoxLayout(self.map_frame)
         self.right_layout.addWidget(self.map_frame)
-        # Use the same county division boundaries as the dashboard to avoid an empty map layer.
+        
         project_root = Path(__file__).resolve().parent
-        ward_geojson_path = project_root / "county_divisions.geojson"
-        oa_shp_path = None
+        boundary_path = str(_resolve_division_boundary_path(project_root))
 
-        # add a map widget to the map frame to display the predicted election results by ward (placeholder for now)
-        maps= Map(self.map_frame)
-        self.web_map_view = maps.create_map(
-            ward_shp_path=str(ward_geojson_path),
-            oa_shp_path=oa_shp_path,
-            forecast_df=self.controller.get_forecast_data()
-        )
+        # 🚀 HOOK INTO THE NEW MAP ENGINE (EXPLICIT WARD/DIVISION MODE)
+        try:
+            from MapOrchestrator import MapOrchestrator
+            self.map_orchestrator = MapOrchestrator(boundary_path)
+            
+            # Maintain structural fine-grained ward shapes for detailed regional target filtering
+            self.web_map_view = self.map_orchestrator.generate_live_viewport(
+                forecast_df=self.controller.get_forecast_data(),
+                view_mode="ward"
+            )
+        except Exception as e:
+            print(f"❌ [GUI ERROR] Forecast ward map initialization failed: {e}")
+            self.web_map_view = QtWidgets.QLabel(f"Map Rendering Error:\n{e}")
+            self.web_map_view.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
         self.map_layout.addWidget(self.web_map_view)
 
 class DataManagerGUI(BaseScreen):

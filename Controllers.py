@@ -18,6 +18,9 @@ class ForecastController:
     def __init__(self, data_source):
         self.data_source = data_source
 
+    def get_summary(self):
+        return self.data_source.get_summary()
+
     def get_forecast_data(self):
         return self.data_source.forecast
     
@@ -27,6 +30,9 @@ class ForecastController:
 class DataManagerController:
     def __init__(self, data_source):
         self.data_source = data_source
+
+    def get_summary(self):
+        return self.data_source.get_summary()
 
     def get_forecast_data(self):
         return self.data_source.forecast
