@@ -1,3 +1,8 @@
+forecaster_engine.py
+Title: Machine Learning Forecasting Engine, Tactical Feature Engineering & SHAP Pipeline
+
+Function: The core predictive model layer; extracts relational tables, engineers tactical voting features (top_2, wasted_vote, diff_vote_shr), runs 5-fold cross-validated grid search tuning, benchmarks XGBoost against Linear Regression, and generates TreeSHAP diagnostic maps.
+
 # =========================================================================
 # IRP Election Forecasting Program - Advanced Predictive Engine Layer
 # Class wrapper implementing Tactical Voting Models & Surge Extrapolation
@@ -515,20 +520,6 @@ class Forecaster:
         forecast_df['ward_name'] = forecast_df['wd_code'].map(self.ward_name_map)
         return forecast_df
 
-    def save_forecast_to_csv(self, output_path: str = "election_forecast_results.csv") -> Path:
-        """Persist all predicted rows to CSV, including mapped ward names."""
-        if self.future_data is None or self.future_data.empty:
-            raise RuntimeError("No forecast data available. Run train_and_evaluate() first.")
-
-        forecast_df = self.forecast.copy()
-        destination = Path(output_path)
-        if not destination.is_absolute():
-            destination = Path(__file__).parent / destination
-
-        forecast_df.to_csv(destination, index=False)
-        print(f"✅ Saved forecast results to: {destination}")
-        return destination
-
 
 # Dynamic Map Engine Imports
 import geopandas as gpd
@@ -711,9 +702,6 @@ if __name__ == "__main__":
     
     # 3. Train tuned model and log performance metrics vs Linear Baseline
     forecaster.train_and_evaluate()
-
-    # 3b. Save all projected 2026 rows to CSV for downstream analysis
-    forecaster.save_forecast_to_csv("election_forecast_results.csv")
     
     # 4. Generate SHAP visual maps for thesis figures
     for feat in features_to_plot:

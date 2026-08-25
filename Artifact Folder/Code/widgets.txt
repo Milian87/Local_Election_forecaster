@@ -1,0 +1,931 @@
+ui_custom_widgets_and_map_view.py
+Title: Custom UI Component Library, Animated Gauge Widgets & Folium Map Viewport  
+Function: Implements reusable PySide6 UI components (styled buttons, form input rows, transaction/history tables, animated circular percentage gauges) and provides a standalone Folium-to-QWebEngineView map generator with boundary status legends and 2026 local override layers
+
+import PySide6.QtWidgets as QtWidgets
+from PySide6.QtWidgets import QGraphicsDropShadowEffect
+from PySide6.QtGui import QColor
+import folium
+import geopandas as gpd
+import pandas as pd
+from branca.element import Element
+from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineWidgets import QWebEngineView
+import os
+from pathlib import Path
+from datetime import datetime
+import re
+import uuid
+from PySide6 import QtCore
+
+# Map style constants so boundary appearance can be tuned in one place.
+DIVISION_FILL_COLOR = '#bdbdbd'
+DIVISION_EDGE_COLOR = '#3f3f3f'
+DIVISION_EDGE_WEIGHT = 1.0
+COUNCIL_BOUNDARY_COLOR = '#ff8c00'
+COUNCIL_BOUNDARY_WEIGHT = 3.2
+COUNCIL_BOUNDARY_OPACITY = 0.95
+
+
+def _normalized_label(value):
+    """Normalize free-text labels for robust council-name matching."""
+    if value is None:
+        return ''
+    text = str(value).strip().casefold()
+    text = re.sub(r'\b(electoral\s+division|division|ed)\b', ' ', text)
+    text = re.sub(r'[^a-z0-9]+', '', text)
+    return text
+
+
+def _pick_first_column(columns, candidates):
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def _guess_council_name_from_local(local_gdf, shp_path):
+    """Best-effort council name extraction from local boundary file fields or filename."""
+    district_col = _pick_first_column(local_gdf.columns, ['DistrictNa', 'District', 'DISTRICT'])
+    if district_col is not None:
+        district_values = [
+            value.strip()
+            for value in local_gdf[district_col].dropna().astype(str).unique()
+            if str(value).strip()
+        ]
+        if len(district_values) == 1:
+            return district_values[0]
+
+    stem = Path(shp_path).stem
+    stem = stem.replace('-', '_')
+    first_token = stem.split('_')[0].strip()
+    if first_token:
+        return first_token
+    return None
+
+
+def _find_council_field(gdf):
+    candidates = [
+        'authority_name',
+        'CTY26NM', 'CTY25NM', 'CTY24NM', 'CTY23NM',
+        'LAD26NM', 'LAD25NM', 'LAD24NM', 'LAD23NM',
+        'DISTRICT', 'District', 'DistrictNa'
+    ]
+    field = _pick_first_column(gdf.columns, candidates)
+    if field is not None:
+        return field
+
+    dynamic_candidates = [
+        col for col in gdf.columns
+        if re.fullmatch(r'(CTY|LAD)\d{2}NM', str(col).upper())
+    ]
+    return dynamic_candidates[0] if dynamic_candidates else None
+
+
+def _select_2026_division_shape_files(overrides_root):
+    selected = []
+    for shp in sorted(overrides_root.rglob('*.shp')):
+        file_name = shp.name.casefold()
+        full_path = str(shp).casefold()
+
+        # Ignore parish-ward files; keep electoral division/proposal layers.
+        if 'pw' in file_name or 'parish' in file_name:
+            continue
+        if not any(token in file_name for token in ('ed', 'electoral_division', 'proposal')):
+            continue
+
+        # Only accept explicit 2026 folders and reject stale files where mtime indicates earlier vintage.
+        if '2026' not in full_path:
+            continue
+        modified_year = datetime.fromtimestamp(shp.stat().st_mtime).year
+        if modified_year < 2026:
+            print(f"[MAP ENGINE] Skipping pre-2026 override file by modified date: {shp}")
+            continue
+
+        selected.append(shp)
+
+    return selected
+
+
+def _resolve_override_council_key(local_gdf, base_councils_gdf, base_key_set):
+    district_col = _pick_first_column(local_gdf.columns, ['DistrictNa', 'District', 'DISTRICT'])
+    if district_col is not None:
+        district_values = [
+            _normalized_label(value)
+            for value in local_gdf[district_col].dropna().astype(str).str.strip().unique()
+        ]
+        district_values = [value for value in district_values if value]
+        if len(district_values) == 1 and district_values[0] in base_key_set:
+            return district_values[0]
+
+    # Fallback to spatial overlap when council names differ across datasets.
+    try:
+        local_area_total = local_gdf.to_crs(epsg=27700).geometry.area.sum()
+        overlap = gpd.overlay(
+            local_gdf[['geometry']],
+            base_councils_gdf[['__council_key', 'geometry']],
+            how='intersection',
+            keep_geom_type=False,
+        )
+        if overlap.empty:
+            return None
+        overlap = overlap.to_crs(epsg=27700)
+        overlap['__overlap_area'] = overlap.geometry.area
+        overlap_by_key = overlap.groupby('__council_key')['__overlap_area'].sum()
+        top_key = str(overlap_by_key.idxmax())
+        top_area = float(overlap_by_key.max())
+        # Only trust spatial fallback when the file mostly overlaps one known council area.
+        if local_area_total <= 0:
+            return None
+        coverage_ratio = top_area / float(local_area_total)
+        if coverage_ratio < 0.60:
+            return None
+        return top_key if top_key in base_key_set else None
+    except Exception as ex:
+        print(f"[MAP ENGINE] WARNING: Council overlap matching failed: {ex}")
+        return None
+
+
+def _apply_local_2026_overrides(gdf_wards):
+    """Replace covered council areas with local 2026 boundaries; keep 2025 elsewhere."""
+    overrides_root = Path(__file__).resolve().parent / 'data' / '2026 Boundaries'
+    default_info = {
+        'applied_replacements': [],
+        'applied_additions': [],
+        'skipped_stale': [],
+        'skipped_unmatched': [],
+    }
+    if not overrides_root.is_dir():
+        gdf_wards.attrs['boundary_mix_info'] = default_info
+        return gdf_wards
+
+    council_field = _find_council_field(gdf_wards)
+    if council_field is None:
+        print("[MAP ENGINE] No council field found in base layer; skipping local 2026 overrides.")
+        gdf_wards.attrs['boundary_mix_info'] = default_info
+        return gdf_wards
+
+    base_gdf = gdf_wards.copy()
+    base_gdf[council_field] = base_gdf[council_field].astype(str).str.strip()
+
+    base_councils = base_gdf[[council_field, 'geometry']].dropna(subset=[council_field]).copy()
+    base_councils = base_councils[base_councils[council_field] != ''].copy()
+    if base_councils.empty:
+        return gdf_wards
+
+    base_councils = base_councils.dissolve(by=council_field, as_index=False)
+    base_councils['__council_key'] = base_councils[council_field].map(_normalized_label)
+    base_name_by_key = {
+        row['__council_key']: row[council_field]
+        for _, row in base_councils.iterrows()
+        if row['__council_key']
+    }
+    base_key_set = set(base_name_by_key.keys())
+
+    override_files = _select_2026_division_shape_files(overrides_root)
+    if not override_files:
+        print("[MAP ENGINE] No local 2026 override shapefiles found; using base boundaries.")
+        gdf_wards.attrs['boundary_mix_info'] = default_info
+        return gdf_wards
+
+    replacement_frames = []
+    additive_frames = []
+    replaced_keys = set()
+    applied_replacements = []
+    applied_additions = []
+    skipped_unmatched = []
+
+    for shp_path in override_files:
+        try:
+            local_gdf = gpd.read_file(shp_path)
+        except Exception as ex:
+            print(f"[MAP ENGINE] WARNING: Failed to read local override {shp_path}: {ex}")
+            continue
+
+        local_gdf = local_gdf[local_gdf.geometry.notna()].copy()
+        if local_gdf.empty:
+            continue
+        if local_gdf.crs is not None:
+            local_gdf = local_gdf.to_crs(epsg=4326)
+
+        guessed_council_name = _guess_council_name_from_local(local_gdf, shp_path)
+        guessed_council_key = _normalized_label(guessed_council_name)
+        council_key = _resolve_override_council_key(local_gdf, base_councils, base_key_set)
+        if not council_key and guessed_council_key in base_key_set:
+            council_key = guessed_council_key
+
+        division_col = _pick_first_column(
+            local_gdf.columns,
+            ['Division_n', 'Divison_na', 'Ward_name', 'WardName', 'Name', 'CED26NM']
+        )
+
+        replacement = local_gdf[['geometry']].copy()
+
+        if council_key:
+            resolved_council_name = base_name_by_key[council_key]
+        elif guessed_council_name:
+            resolved_council_name = guessed_council_name
+        else:
+            print(f"[MAP ENGINE] No base council match for local override: {shp_path}")
+            skipped_unmatched.append(str(shp_path))
+            continue
+
+        replacement[council_field] = resolved_council_name
+        replacement['authority_name'] = resolved_council_name
+
+        if division_col is not None:
+            clean_names = local_gdf[division_col].astype(str).str.strip()
+            clean_names = clean_names.str.replace(r'\s+(Electoral\s+Division|ED)\s*$', '', regex=True)
+            replacement['CED26NM'] = clean_names
+        else:
+            replacement['CED26NM'] = [f"{resolved_council_name} Division {idx + 1}" for idx in range(len(replacement))]
+
+        council_key_str = str(council_key if council_key else guessed_council_key)
+        replacement['CED26CD'] = [f"LOCAL26_{council_key_str[:8].upper()}_{idx + 1:03d}" for idx in range(len(replacement))]
+        if council_key:
+            replacement_frames.append(replacement)
+            replaced_keys.add(council_key)
+            applied_replacements.append(resolved_council_name)
+            print(f"[MAP ENGINE] Applied local 2026 override from {shp_path.name} for {resolved_council_name}.")
+        else:
+            additive_frames.append(replacement)
+            applied_additions.append(resolved_council_name)
+            print(f"[MAP ENGINE] Added local 2026 council from {shp_path.name}: {resolved_council_name}.")
+
+    if not replacement_frames and not additive_frames:
+        print("[MAP ENGINE] No local 2026 overrides were usable; using base boundaries.")
+        gdf_wards.attrs['boundary_mix_info'] = {
+            'applied_replacements': applied_replacements,
+            'applied_additions': applied_additions,
+            'skipped_stale': [],
+            'skipped_unmatched': skipped_unmatched,
+        }
+        return gdf_wards
+
+    base_mask = ~base_gdf[council_field].map(_normalized_label).isin(replaced_keys)
+    fallback_base = base_gdf[base_mask].copy()  # Keep 2025 rows where no 2026 override exists.
+    merged = pd.concat([fallback_base, *replacement_frames, *additive_frames], ignore_index=True)
+    merged = gpd.GeoDataFrame(merged, geometry='geometry', crs=base_gdf.crs)
+    print(f"[MAP ENGINE] Replaced {len(replaced_keys)} council area(s) with local 2026 boundaries.")
+    if additive_frames:
+        print(f"[MAP ENGINE] Added {len(applied_additions)} extra council override(s) not present in base layer.")
+    merged.attrs['boundary_mix_info'] = {
+        'applied_replacements': applied_replacements,
+        'applied_additions': applied_additions,
+        'skipped_stale': [],
+        'skipped_unmatched': skipped_unmatched,
+    }
+    return merged
+
+
+def _add_boundary_status_legend(folium_map, info):
+    replacements = sorted(set(info.get('applied_replacements', [])))
+    additions = sorted(set(info.get('applied_additions', [])))
+
+    replacement_text = ', '.join(replacements[:6])
+    if len(replacements) > 6:
+        replacement_text += f" (+{len(replacements) - 6} more)"
+    if not replacement_text:
+        replacement_text = 'None'
+
+    addition_text = ', '.join(additions[:6])
+    if len(additions) > 6:
+        addition_text += f" (+{len(additions) - 6} more)"
+    if not addition_text:
+        addition_text = 'None'
+
+    html = f"""
+    <div style="
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        z-index: 10000;
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid #bdbdbd;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 12px;
+        line-height: 1.35;
+        max-width: 360px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    ">
+      <div style="font-weight: 700; margin-bottom: 4px;">Boundary Source</div>
+      <div><span style="font-weight:600; color:#2e7d32;">2026 Replacement:</span> {replacement_text}</div>
+      <div><span style="font-weight:600; color:#1565c0;">2026 Added:</span> {addition_text}</div>
+      <div><span style="font-weight:600; color:#616161;">Fallback:</span> 2025 base for all other councils</div>
+    </div>
+    """
+    folium_map.get_root().html.add_child(Element(html))
+
+blue_button_style = """
+    QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #7ab2e2, stop:1 #3a6faa);
+        color: white;
+        border-radius: 16px;
+        padding: 8px 6px;
+        font-size: 12px;
+        font-weight: bold;
+        border: 1px solid #2d5a90;
+        }
+        QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #90c0f0, stop:1 #4a80bc);
+        }
+        QPushButton:pressed {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #3a6faa, stop:1 #7ab2e2);
+        }
+        """
+active_blue_button_style = """
+    QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #4a80bc, stop:1 #2d5a90);
+        color: white;
+        border-radius: 16px;
+        padding: 8px 6px;
+        font-size: 12px;
+        font-weight: bold;
+        border: 2px solid #1a3a5a;
+    }
+    QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #90c0f0, stop:1 #4a80bc);
+    }
+    QPushButton:pressed {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #3a6faa, stop:1 #7ab2e2);
+    }
+    """
+green_button_style = """
+    QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #81c784, stop:1 #388e3c);  /* light green to deep green */
+        color: white;
+        border-radius: 16px;
+        padding: 8px 6px;
+        font-size: 12px;
+        font-weight: bold;
+        border: 1.5px solid #2e7d32;
+    }
+    QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #a5d6a7, stop:1 #43a047);
+    }
+    QPushButton:pressed {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #388e3c, stop:1 #81c784);
+    }
+    """
+red_button_style = """
+    QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #e57373, stop:1 #b71c1c);  /* light red to deep red */
+        color: white;
+        border-radius: 16px;
+        padding: 8px 6px;
+        font-size: 12px;
+        font-weight: bold;
+        border: 1.5px solid #7f1d1d;
+    }
+    QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #ef9a9a, stop:1 #c62828);
+    }
+    QPushButton:pressed {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #b71c1c, stop:1 #e57373);
+    }
+    """
+
+class ButtonWidget:
+    """
+    Reusable component for creating styled buttons with callbacks.
+    Supports custom styling and flexible positioning.
+    """
+    def __init__(self, parent_layout, text, callback=None, button_style="", tooltip=""):
+        # Create the button
+        self.button = QtWidgets.QPushButton(text)
+        
+        # Set custom style if provided
+        if button_style:
+            self.button.setStyleSheet(button_style)
+
+        shadow = QGraphicsDropShadowEffect()
+        self.button.setMinimumHeight(40)  # ensure minimum height for round ends
+        self.button.setMaximumHeight(40)  # fix height for consistent roundness
+        self.button.setMinimumWidth(100)  # ensure wide pill shape
+        self.button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)  # ADDED: allow horizontal expansion for pill shape
+        # REMOVED setMaximumWidth for flexibility
+        shadow.setBlurRadius(8)
+        shadow.setOffset(0, 2)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        self.button.setGraphicsEffect(shadow)
+        
+        # Set tooltip if provided
+        if tooltip:
+            self.button.setToolTip(tooltip)
+        
+        # Connect callback if provided
+        if callback:
+            self.button.clicked.connect(callback)
+        
+        # Add to parent layout
+        if parent_layout:
+            parent_layout.addWidget(self.button)
+    
+    def connect(self, callback):
+        """Connect or reconnect the button to a callback function"""
+        self.button.clicked.connect(callback)
+    
+    def disconnect(self):
+        """Disconnect all signals from the button"""
+        self.button.clicked.disconnect()
+    
+    def set_text(self, text):
+        """Update the button text"""
+        self.button.setText(text)
+    
+    def set_enabled(self, enabled):
+        """Enable or disable the button"""
+        self.button.setEnabled(enabled)
+    
+    def set_style(self, style):
+        """Update the button style"""
+        self.button.setStyleSheet(style)
+    
+    def set_tooltip(self, tooltip):
+        """Update the button tooltip"""
+        self.button.setToolTip(tooltip)
+
+class FormRow(QtWidgets.QWidget):
+    """
+    A reusable widget for one or more rows of form inputs (label + input).
+    Accepts a list of fields (for one row) or a list of lists of fields (for multiple rows).
+    """
+    def __init__(self, fields, parent=None):
+        super().__init__(parent)
+        self.inputs = {}  # Store references to input widgets for later access
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(0)  # Add spacing between rows
+        layout.setContentsMargins(0, 0, 0, 0)
+        # If fields is a list of lists, treat each as a row
+        if fields and isinstance(fields[0], list):
+            for row in fields:
+                row_layout = QtWidgets.QHBoxLayout()
+                row_layout.setSpacing(0)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                for key, label_text, widget_class, options in row:
+                    box = QtWidgets.QFrame()
+                    box.setStyleSheet("background-color: transparent; border: none;")
+                    box_layout = QtWidgets.QHBoxLayout(box)
+                    box_layout.setSpacing(0)
+                    box_layout.setContentsMargins(0, 0, 0, 0)
+                    label = QtWidgets.QLabel(label_text)
+                    input_widget = widget_class()
+                    input_widget.setMinimumWidth(40)  # Ensure minimum width for better appearance
+                    input_widget.setMaximumHeight(40)  # Match button height for consistency
+                    self.inputs[key] = input_widget
+                    input_widget.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
+                    if isinstance(input_widget, QtWidgets.QComboBox) and "items" in options:
+                        input_widget.addItems(options["items"])
+                    if isinstance(input_widget, QtWidgets.QLineEdit) and "placeholder" in options:
+                        input_widget.setPlaceholderText(options["placeholder"])
+
+                    box_layout.addWidget(label)
+                    box_layout.addWidget(input_widget)
+                    row_layout.addWidget(box)
+                layout.addLayout(row_layout)
+        else:
+            # Single row (original behavior)
+            row_layout = QtWidgets.QHBoxLayout()
+            row_layout.setSpacing(0)  # or 0 for even tighter
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            for label_text, widget_class, options in fields:
+                box = QtWidgets.QFrame()
+                box.setStyleSheet("background-color: transparent; border: none;")
+                box_layout = QtWidgets.QHBoxLayout(box)
+                box_layout.setSpacing(0)
+                box_layout.setContentsMargins(0, 0, 0, 0)
+                label = QtWidgets.QLabel(options.get("label", ""))
+                input_widget = widget_class()
+                input_widget.setMinimumWidth(40)  # Ensure minimum width for better appearance
+                input_widget.setMaximumHeight(40)  # Match button height for consistency
+                self.inputs[label_text] = input_widget  # Store reference to input widget
+                input_widget.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
+                if isinstance(input_widget, QtWidgets.QComboBox) and "items" in options:
+                    input_widget.addItems(options["items"])
+                if isinstance(input_widget, QtWidgets.QLineEdit) and "placeholder" in options:
+                    input_widget.setPlaceholderText(options["placeholder"])
+                box_layout.addWidget(label)
+                box_layout.addWidget(input_widget)
+                row_layout.addWidget(box)
+            layout.addLayout(row_layout)
+        # add a stretch at the end of the layout to push the rows to the top
+
+class TransactionEntryWidget(QtWidgets.QWidget):
+    """A widget to display a single transaction entry, showing type, category, amount, account, and date."""
+    def __init__(self, transaction_data, parent=None):
+        HISTORY_HEADERS = ["Date", "Account", "Type", "Category", "Amount", "Running Balance", "Description"]
+        super().__init__(parent)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # Example: show type, category, amount, account, date
+        layout.addWidget(QtWidgets.QLabel(transaction_data.get("type", "")))
+        layout.addWidget(QtWidgets.QLabel(transaction_data.get("category", "")))
+        layout.addWidget(QtWidgets.QLabel(f"£{transaction_data.get('amount', 0):.2f}"))
+        layout.addWidget(QtWidgets.QLabel(transaction_data.get("account", "")))
+        layout.addWidget(QtWidgets.QLabel(transaction_data.get("date", "")))
+
+class HistoryTableWidget(QtWidgets.QTableWidget):
+    def __init__(self, headers=None, parent=None):
+        super().__init__(parent)# add a card to display the transaction history
+        if headers is None:
+            headers = ["Date", "Account", "Type", "Category", "Amount", "Running Balance", "Description"]
+        history_card = QtWidgets.QFrame()
+        history_card.setStyleSheet("background-color: #ffffff; border-radius: 10px; padding: 10px;")
+        history_layout = QtWidgets.QVBoxLayout(history_card)
+        history_label = QtWidgets.QLabel("Transaction History")
+        history_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        history_layout.addWidget(history_label)
+        self.history_table = QtWidgets.QTableWidget()
+        self.history_table.setColumnCount(len(headers))
+        self.history_table.setHorizontalHeaderLabels(headers)
+        header = self.history_table.horizontalHeader()
+        header.setVisible(True)
+        header.setStyleSheet(
+            "QHeaderView::section {"
+            "color: #222;"
+            "background: #f5f5f5;"
+            "font-size: 12px;"
+            "font-weight: normal;"
+            "padding: 5px 0px;"
+            "border: 1px solid #ddd;"
+            "}"
+        )
+        header.setFixedHeight(50)
+        self.history_table.setStyleSheet("QTableWidget::item { color: black; }")
+        for col in range(len(headers)):
+            header.setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.history_table.show()
+        self.history_table.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+
+        # add the history table to the history card
+        history_layout.addWidget(self.history_table)
+
+class Map:
+    def __init__(self, map_frame):
+        self.map_frame = map_frame
+        self.web_map_view = None  # This will hold the QWebEngineView instance
+
+    def create_map(self, ward_shp_path=None, oa_shp_path=None, forecast_df=None):
+        # 1. Create the Folium Map Object (Centered on England with a moderate zoom level)
+        # You can style this using standard OpenStreetMap tiles
+        m = folium.Map(location=[52.75, 0.40], zoom_start=10, tiles="OpenStreetMap")
+        gdf_wards = gpd.GeoDataFrame()
+
+        # 2. Add Wards / County Divisions Layer if provided
+        if ward_shp_path and os.path.exists(ward_shp_path):
+            print(f"[MAP ENGINE] Processing Ward Boundary File: {os.path.basename(ward_shp_path)}")
+            # Read vector boundary file (GeoJSON/SHP/etc.) and normalize to WGS84 for Folium.
+            gdf_wards = gpd.read_file(ward_shp_path)
+            gdf_wards = gdf_wards[gdf_wards.geometry.notna()].copy()
+            if gdf_wards.crs is not None:
+                gdf_wards = gdf_wards.to_crs(epsg=4326)
+            else:
+                print("[MAP ENGINE] WARNING: Ward CRS missing; treating as EPSG:4326.")
+
+            # If the source is a raw CED shapefile, enrich it with county metadata.
+            ced_code_cols = sorted(
+                [col for col in gdf_wards.columns if re.fullmatch(r'CED\d{2}CD', str(col).upper())],
+                reverse=True,
+            )
+            if ced_code_cols:
+                ced_code_col = ced_code_cols[0]
+                ced_suffix_match = re.search(r'(\d{2})', ced_code_col)
+                ced_suffix = ced_suffix_match.group(1) if ced_suffix_match else '25'
+                county_name_col = f'CTY{ced_suffix}NM'
+
+                if county_name_col not in gdf_wards.columns:
+                    csv_dir = os.path.join(os.path.dirname(__file__), 'data', 'csv')
+                    candidate_years = [f'20{ced_suffix}', '2025']  # Prefer same-vintage lookup, then 2025 fallback.
+                    lookup_candidates = []
+                    for year in candidate_years:
+                        lookup_candidates.extend([
+                            os.path.join(
+                                csv_dir,
+                                f'Ward_to_LAD_to_County_to_County_Electoral_Division_(May_{year})_Lookup_for_England.csv'
+                            ),
+                            os.path.join(
+                                csv_dir,
+                                f'Ward_to_LAD_to_County_to_County_Electoral_Division_(May {year})_Lookup_for_England.csv'
+                            ),
+                        ])
+
+                    if os.path.isdir(csv_dir):
+                        available_csv = sorted(
+                            os.path.join(csv_dir, name)
+                            for name in os.listdir(csv_dir)
+                            if name.lower().endswith('.csv') and 'county_electoral_division' in name.lower()
+                        )
+                        for year in candidate_years:
+                            lookup_candidates.extend([
+                                path for path in available_csv if year in os.path.basename(path)
+                            ])
+
+                    lookup_path = next((path for path in lookup_candidates if os.path.exists(path)), None)
+                    if lookup_path:
+                        lookup_header_cols = pd.read_csv(lookup_path, nrows=0).columns.tolist()
+                        lookup_ced_col = ced_code_col
+                        if lookup_ced_col not in lookup_header_cols:
+                            any_lookup_ced = [
+                                col for col in lookup_header_cols if re.fullmatch(r'CED\d{2}CD', str(col).upper())
+                            ]
+                            lookup_ced_col = any_lookup_ced[0] if any_lookup_ced else None
+
+                        if lookup_ced_col is not None:
+                            lookup_cols = [lookup_ced_col]
+                            preferred_fields = [
+                                f'CTY{ced_suffix}CD',
+                                f'CTY{ced_suffix}NM',
+                                f'LAD{ced_suffix}CD',
+                                f'LAD{ced_suffix}NM',
+                            ]
+                            for field in preferred_fields:
+                                if field in lookup_header_cols:
+                                    lookup_cols.append(field)
+
+                            # If same-vintage fields are missing, include whatever county/LAD name fields exist.
+                            if len(lookup_cols) == 1:
+                                lookup_cols.extend([
+                                    col
+                                    for col in lookup_header_cols
+                                    if re.fullmatch(r'(CTY|LAD)\d{2}(CD|NM)', str(col).upper())
+                                ])
+
+                            lookup_df = pd.read_csv(lookup_path, usecols=lookup_cols)
+                            lookup_df = lookup_df.dropna(subset=[lookup_ced_col]).copy()  # Keep rows with valid CED keys only.
+                            lookup_df[lookup_ced_col] = lookup_df[lookup_ced_col].astype(str).str.strip()  # Normalize join keys.
+                            lookup_df = lookup_df.drop_duplicates(subset=[lookup_ced_col])  # Keep one county mapping per CED.
+
+                            gdf_wards[ced_code_col] = gdf_wards[ced_code_col].astype(str).str.strip()  # Normalize shape keys before merge.
+                            gdf_wards = gdf_wards.merge(
+                                lookup_df,
+                                left_on=ced_code_col,
+                                right_on=lookup_ced_col,
+                                how='left',
+                            )  # Attach county fields for focus and overlays.
+                            print(f"[MAP ENGINE] Enriched CED layer using lookup: {os.path.basename(lookup_path)}")
+                        else:
+                            print(f"[MAP ENGINE] WARNING: No CED code column found in lookup file: {lookup_path}")
+                    else:
+                        print("[MAP ENGINE] WARNING: No CED lookup CSV found for metadata enrichment.")
+
+            # Apply any partial local 2026 council updates on top of the loaded base boundaries.
+            gdf_wards = _apply_local_2026_overrides(gdf_wards)
+            _add_boundary_status_legend(m, gdf_wards.attrs.get('boundary_mix_info', {}))
+
+            # Keep every division in the layer, but compute a separate Norfolk focus box for map centering.
+            norfolk_focus_bounds = None  # Stores [xmin, ymin, xmax, ymax] for Norfolk-only centering.
+            for county_col in ['CTY26NM', 'CTY25NM', 'CTY24NM', 'CTY23NM']:
+                if county_col in gdf_wards.columns:
+                    norfolk_rows = gdf_wards[
+                        gdf_wards[county_col].astype(str).str.strip().str.casefold() == 'norfolk'
+                    ]  # Select Norfolk rows only for focus, not for rendering.
+                    if not norfolk_rows.empty:
+                        norfolk_focus_bounds = norfolk_rows.total_bounds.tolist()  # Capture Norfolk extent for fit_bounds.
+                        print(f"[MAP ENGINE] Norfolk focus bounds detected using {county_col}.")
+                    break
+            if norfolk_focus_bounds is None:
+                print("[MAP ENGINE] No Norfolk county column found. Using full layer extent for map centering.")
+
+            print(f"[MAP ENGINE] Loaded {len(gdf_wards):,} ward boundaries for mapping.")
+            sample_name_col = None
+            for candidate in ['CED26NM', 'CED25NM', 'CED24NM', 'CED23NM', 'WD26NM', 'WD25NM', 'WD24NM', 'WD23NM']:
+                if candidate in gdf_wards.columns:
+                    sample_name_col = candidate
+                    break
+            if sample_name_col:
+                print("Sample division names in the dataset:\n", gdf_wards[sample_name_col].unique()[:16])
+
+            if gdf_wards.empty:
+                print("[MAP ENGINE] WARNING: No valid ward geometries found. Skipping ward layer.")
+            else:
+                # Inject interactive boundaries with tooltips
+                tooltip_field = None
+                for candidate in ['CED26NM', 'CED25NM', 'CED24NM', 'CED23NM', 'WD26NM', 'WD25NM', 'WD24NM', 'WD23NM']:
+                    if candidate in gdf_wards.columns:
+                        tooltip_field = candidate
+                        break
+                if tooltip_field is None and len(gdf_wards.columns) > 1:
+                    tooltip_field = gdf_wards.columns[1]
+
+                def style_fn(feature):
+                    return {
+                        'fillColor': DIVISION_FILL_COLOR,
+                        'color': DIVISION_EDGE_COLOR,
+                        'weight': DIVISION_EDGE_WEIGHT,
+                        'opacity': 1.0,
+                        'fillOpacity': 0.35
+                    }
+
+                geojson_kwargs = {
+                    "name": "Electoral Wards",
+                    "style_function": style_fn,
+                    "highlight_function": lambda x: {
+                        'weight': 3,
+                        'color': '#000000',
+                        'opacity': 1.0,
+                        'fillOpacity': 0.65,
+                    },
+                }
+                if tooltip_field:
+                    geojson_kwargs["tooltip"] = folium.GeoJsonTooltip(
+                        fields=[tooltip_field],
+                        aliases=['Division:'],
+                        localize=True
+                    )
+
+                folium.GeoJson(gdf_wards, **geojson_kwargs).add_to(m)
+
+                # Pick the best available council-name column from the loaded boundary file.
+                council_field = None
+                for candidate in ['authority_name', 'CTY26NM', 'CTY25NM', 'LAD26NM', 'LAD25NM', 'DISTRICT']:
+                    if candidate in gdf_wards.columns:
+                        council_field = candidate
+                        break
+
+                # Dissolve division polygons into council polygons so only council outlines are drawn.
+                if council_field is not None:
+                    gdf_councils = gdf_wards[gdf_wards[council_field].notna()].copy()  # Keep rows that can be grouped into councils.
+                    if not gdf_councils.empty:
+                        gdf_councils[council_field] = gdf_councils[council_field].astype(str).str.strip()  # Normalize council names before dissolve.
+                        gdf_councils = gdf_councils.dissolve(by=council_field, as_index=False)  # Merge all divisions per council into one boundary.
+
+                        # Overlay council boundaries with a stronger stroke and transparent fill.
+                        folium.GeoJson(
+                            gdf_councils,
+                            name="Council Boundaries",  # Layer name shown in map controls.
+                            style_function=lambda x: {
+                                'fillColor': '#00000000',  # Fully transparent fill so only outlines stand out.
+                                'color': COUNCIL_BOUNDARY_COLOR,  # Orange stroke to distinguish council edges from division edges.
+                                'weight': COUNCIL_BOUNDARY_WEIGHT,  # Thicker line to emphasize council boundary hierarchy.
+                                'opacity': COUNCIL_BOUNDARY_OPACITY
+                            },
+                            tooltip=folium.GeoJsonTooltip(
+                                fields=[council_field],
+                                aliases=['Council:'],
+                                localize=True
+                            )
+                        ).add_to(m)
+                        print(f"[MAP ENGINE] Added highlighted council boundary overlay using {council_field}.")
+                    else:
+                        print("[MAP ENGINE] No council rows available for highlighted boundary overlay.")
+                else:
+                    print("[MAP ENGINE] No council column found; skipping council boundary highlight overlay.")
+
+                if norfolk_focus_bounds is not None:
+                    # Center/zoom to Norfolk while still drawing all divisions across England.
+                    m.fit_bounds([
+                        [norfolk_focus_bounds[1], norfolk_focus_bounds[0]],
+                        [norfolk_focus_bounds[3], norfolk_focus_bounds[2]],
+                    ])
+                else:
+                    ward_bounds = gdf_wards.total_bounds.tolist()  # Fallback to national extent when Norfolk focus is unavailable.
+                    m.fit_bounds([[ward_bounds[1], ward_bounds[0]], [ward_bounds[3], ward_bounds[2]]])
+
+        # 3. Add Output Areas Layer if provided (rendered with micro-borders)
+        if oa_shp_path and os.path.exists(oa_shp_path):
+            print(f"[MAP ENGINE] Processing Output Area Boundary File: {os.path.basename(oa_shp_path)}")
+            gdf_oa = gpd.read_file(oa_shp_path)
+
+            # Ensure both geographic layers share the exact same spatial coordinate system
+            if not gdf_wards.empty:
+                print("[MAP ENGINE] Aligning projections for target area isolation...")
+                if gdf_wards.crs is not None:
+                    gdf_oa = gdf_oa.to_crs(gdf_wards.crs)
+                else:
+                    print("[MAP ENGINE] WARNING: Ward CRS is missing; skipping OA reprojection.")
+                
+                print("[MAP ENGINE] Running adaptive geometric layout intersection...")
+                try:
+                    # Fallback A: Try an optimized quick intersection clip mask
+                    gdf_oa = gpd.clip(gdf_oa, gdf_wards)
+                except Exception:
+                    try:
+                        # Fallback B: Spatial Join fallback if the index matrix fails to align
+                        gdf_oa = gpd.sjoin(gdf_oa, gdf_wards, how="inner", predicate="intersects")
+                        if 'index_right' in gdf_oa.columns:
+                            gdf_oa = gdf_oa.drop(columns=['index_right'])
+                    except Exception:
+                        print("[MAP ENGINE] Index mismatch handled. Building explicit bounding box envelope...")
+                        from shapely.geometry import box
+                        
+                        # Extract bounding box parameters securely
+                        xmin, ymin, xmax, ymax = gdf_wards.total_bounds
+                        
+                        # Create an explicit bounding box geometry to completely bypass .cx float bugs
+                        bbox_poly = box(xmin, ymin, xmax, ymax)
+                        
+                        # Filter down the output areas to only include shapes that intersect our bounding envelope
+                        gdf_oa = gdf_oa[gdf_oa.geometry.intersects(bbox_poly)].copy()
+
+            # SAFETY CHECK: Only push to Folium canvas if valid shapes exist
+            if not gdf_oa.empty:
+                oa_cols = gdf_oa.columns.tolist()
+                target_oa_field = 'OA21CD' if 'OA21CD' in oa_cols else (oa_cols[0] if len(oa_cols) > 0 else None)
+                
+                print(f"[MAP ENGINE] Success! Filtered {len(gdf_oa):,} micro-local Output Areas for display.")
+                debug_name_col = None
+                for candidate in ['CED25NM', 'CED24NM', 'CED23NM', 'WD25NM', 'WD24NM', 'WD23NM']:
+                    if candidate in gdf_wards.columns:
+                        debug_name_col = candidate
+                        break
+                if debug_name_col:
+                    print("names of divisions in the map:\n", gdf_wards[debug_name_col].unique())
+                if target_oa_field:
+                    folium.GeoJson(
+                        gdf_oa,
+                        name="Output Areas (Census)",
+                        style_function=lambda x: {
+                            'fillColor': '#8f8',
+                            'color': '#2e7d32',
+                            'weight': 0.5,
+                            'fillOpacity': 0.1
+                        },
+                        tooltip=folium.GeoJsonTooltip(fields=[target_oa_field], aliases=['OA Code:'])
+                    ).add_to(m)
+            else:
+                print("[MAP ENGINE] WARNING: Boundary filters returned 0 rows. Bypassing layer.")
+
+        # 4. Save map file to a unique workspace cache path per view instance.
+        # This avoids one screen overwriting another screen's rendered map.
+        html_map_path = os.path.abspath(
+            os.path.join("data", "processed", f"temp_map_{uuid.uuid4().hex}.html")
+        )
+        os.makedirs(os.path.dirname(html_map_path), exist_ok=True)
+        m.save(html_map_path)
+        print(f"[MAP ENGINE] Saved map HTML: {html_map_path}")
+
+        # 5. Build and populate the QtWebEngineView viewport
+        self.web_map_view = QWebEngineView()
+        self.web_map_view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
+        )
+        self.web_map_view.setUrl(QtCore.QUrl.fromLocalFile(html_map_path))
+
+        # Clear active layouts and lock widget dimensions natively
+        if self.map_frame.layout() is None:
+            self.map_layout = QtWidgets.QVBoxLayout(self.map_frame)
+            self.map_layout.setContentsMargins(0, 0, 0, 0)
+
+        return self.web_map_view
+        
+from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QPainter, QPen, QFont
+from PySide6.QtCore import Qt, QRectF
+
+class GaugeWidget(QWidget):
+    def __init__(self, min_value=0, max_value=100, value=0, parent=None, x=200, y=200):
+        super().__init__(parent)
+        self.min_value = min_value
+        self.max_value = max_value
+        self.value = value
+        self.textsize = 0.16*x
+        self.setMinimumSize(x, y)
+        self.setMaximumSize(x, y)
+
+    def set_value(self, value):
+        self.value = value
+        self.update()  # Triggers a repaint
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(10, 10, self.width()-20, self.height()-20)
+
+        # Draw background arc
+        pen = QPen(Qt.GlobalColor.lightGray, 15)
+        painter.setPen(pen)
+        painter.drawArc(rect, 45*16, 270*16)
+
+        # Draw value arc
+        pen.setColor(Qt.GlobalColor.blue)
+        painter.setPen(pen)
+        span_angle = int(270 * (self.value - self.min_value) / (self.max_value - self.min_value))
+        painter.drawArc(rect, 45*16, -span_angle*16)
+
+        # Draw value text
+        painter.setPen(Qt.GlobalColor.black)
+        font = QFont("Arial", int(self.textsize), QFont.Weight.Bold)
+        painter.setFont(font)
+        value_str = f"{self.value}%"
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop, value_str)
+
+
+
+# Usage in your GUI:
+# gauge = GaugeWidget(x=125, y=125)
+# layout.addWidget(gauge)
+# gauge.set_value(24)  # To update the value dynamically

@@ -1,0 +1,80 @@
+[MAP ENGINE] Using official England-wide CED boundary layer: CED_MAY_2025_EN_BFC.shp
+[MAP ENGINE] Applied local 2026/proposed override: Essex_F_Electoral_Division_polygons.shp (replaced 70, added 78)
+[MAP ENGINE] Applied local 2026/proposed override: Norfolk_final_proposals.shp (replaced 84, added 85)
+[MAP ENGINE] Applied local 2026/proposed override: Shropshire_F_ED_polygons.shp (replaced 0, added 72)
+[MAP ENGINE] Applied local 2026/proposed override: Suffolk_F_ED_polys.shp (replaced 64, added 69)
+[MAP ENGINE] Local 2026 overlay summary: replaced 218 base divisions, added 304 override divisions.
+🚀 Initializing Sequential Gradient Boosting Architecture (XGBoost)...
+🚀 Extracting demographics and base party results matrices...
+📈 Processing localized historical party baseline frameworks...
+🛠️ Generating tactical voting features downstream via vector loops...
+
+🔍 STARTING AUTOMATED HYPERPARAMETER TUNING (GridSearchCV)...
+Fitting 5 folds for each of 432 candidates, totalling 2160 fits
+
+====================================================
+🏆 OPTIMAL HYPERPARAMETERS FOUND
+====================================================
+  • colsample_bytree    : 0.8
+  • learning_rate       : 0.05
+  • max_depth           : 3
+  • n_estimators        : 450
+  • reg_alpha           : 0.1
+  • reg_lambda          : 1.0
+  • subsample           : 0.8
+  • Best 5-Fold CV RMSE: 4.3682%
+====================================================
+
+*************** TRUE SURGE PROJECTION PIPELINE ***************
+📈 Active Training Matrix: 2,094 records.
+
+====================================================
+📈 HISTORICAL BACKTESTING PERFORMANCE COMPARISON
+====================================================
+🔹 Linear Baseline (Linear Regression):
+   - RMSE: 4.11%
+   - R² Score: 0.8619 (86.19% variance explained)
+----------------------------------------------------
+🚀 Non-Linear Ensemble (XGBRegressor):
+   - RMSE: 5.03%
+   - R² Score: 0.7929 (79.29% variance explained)
+====================================================
+
+🔮 Initializing TreeExplainer for SHAP...
+*******🔍 Generating SHAP explanation for: Gaywood North & Central ED********
+✅ Saved visualization: Figure_wasted_vote.png
+*******🔍 Generating SHAP explanation for: Gaywood North & Central ED********
+✅ Saved visualization: Figure_candidate_personal_historical_mean.png
+
+====================================================
+🔍 INTERACTIVE FORECAST LOOKUP
+====================================================
+
+Enter a ward code (e.g., E05004023) or type 'exit':
+👉 Gaywood South
+
+🔮 Forecast for Gaywood South ED (E58000987)
+Party                               |  Projected % |  Clipped % | Normalized %
+-------------------------------------------------------------------------------
+Reform UK                           |      47.3053 |      47.31 |        53.61
+Liberal Democrats                   |      28.3715 |      28.37 |        32.16
+Independent                         |       7.6087 |       7.61 |         8.62
+Green Party                         |       4.9469 |       4.95 |         5.61
+Conservative                        |      -2.8437 |       0.00 |         0.00
+Labour                              |      -9.3369 |       0.00 |         0.00
+
+Enter a ward code (e.g., E05004023) or type 'exit':
+👉 Gaywood North and Central
+
+🔮 Forecast for Gaywood North and Central ED (E58000986)
+Party                               |  Projected % |  Clipped % | Normalized %
+-------------------------------------------------------------------------------
+Liberal Democrats                   |      58.5000 |      58.50 |        60.12
+Reform UK                           |      38.8110 |      38.81 |        39.88
+Conservative                        |      -7.9200 |       0.00 |         0.00
+Labour                              |     -12.7600 |       0.00 |         0.00
+Green Party                         |      -6.1955 |       0.00 |         0.00
+
+Enter a ward code (e.g., E05004023) or type 'exit':
+👉 exit
+Goodbye!

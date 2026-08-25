@@ -1,0 +1,60 @@
+generate_county_divisions_geojson.py
+Title: Norfolk County Electoral Divisions GeoJSON Spatial Layer Generator
+
+Function: Queries and downloads ArcGIS spatial division boundaries, reprograms them to WGS84 CRS, and formats standardized boundary columns for map rendering.
+
+import geopandas as gpd
+from pathlib import Path
+
+
+OFFICIAL_LAYER_URL = (
+    "https://maps.norfolk.gov.uk/arcgis/rest/services/layers_ext/where_i_live/MapServer/20/query"
+    "?where=1%3D1&outFields=*&returnGeometry=true&f=geojson"
+)
+
+
+def build_county_divisions_geojson(output_path: Path) -> None:
+    print("[STEP] Downloading official Norfolk County Councillors layer...")
+    gdf = gpd.read_file(OFFICIAL_LAYER_URL)
+
+    if gdf.crs is not None:
+        gdf = gdf.to_crs(epsg=4326)
+
+    # Add compatibility columns used by the map engine.
+    if "DIV_NAME" in gdf.columns:
+        gdf["CED25NM"] = gdf["DIV_NAME"]
+        gdf["WD25NM"] = gdf["DIV_NAME"]
+    if "NCC_CODE" in gdf.columns:
+        gdf["CED25CD"] = gdf["NCC_CODE"]
+        gdf["WD25CD"] = gdf["NCC_CODE"]
+
+    gdf["CTY25NM"] = "Norfolk"
+    gdf["LAD25NM"] = "Norfolk"
+
+    keep_cols = [
+        c for c in [
+            "CED25CD",
+            "CED25NM",
+            "WD25CD",
+            "WD25NM",
+            "CTY25NM",
+            "LAD25NM",
+            "DISTRICT",
+            "NAME",
+            "Party",
+            "Elected",
+            "geometry",
+        ] if c in gdf.columns
+    ]
+    out = gdf[keep_cols].copy()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_file(output_path, driver="GeoJSON")
+    print(f"[SUCCESS] County divisions GeoJSON generated at: {output_path}")
+    print(f"[INFO] Division count: {len(out)}")
+    if "WD25NM" in out.columns:
+        print(f"[INFO] Sample names: {out['WD25NM'].head(10).tolist()}")
+
+
+if __name__ == "__main__":
+    build_county_divisions_geojson(Path(__file__).resolve().parent / "county_divisions.geojson")

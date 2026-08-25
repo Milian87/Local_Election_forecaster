@@ -1,7 +1,0 @@
-pandas
-SQLAlchemy
-PyMySQL
-PySide6
-folium
-geopandas
-matplotlib

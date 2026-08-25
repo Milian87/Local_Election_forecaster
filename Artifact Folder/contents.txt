@@ -1,0 +1,55 @@
+Artifact Folder Contents Manifest
+
+This manifest provides an itemized tree of the Artifact Folder and a short description of each listed folder and file.
+
+Artifact Folder/
+├── Code/ - Text exports of the main program modules and processing scripts used in the Local Election Forecaster pipeline.
+│   ├── 2011_census_upload.txt - Script text for importing and loading 2011 census data into the project workflow.
+│   ├── census_population_uploader.txt - Script text for uploading population-focused census tables and related fields.
+│   ├── census_upload.txt - General census ingestion script text used to load multiple census datasets.
+│   ├── Controllers.txt - Controller-layer code text that coordinates application actions and workflow routing.
+│   ├── county_codes_uploads.txt - Script text for importing and updating county code lookup data.
+│   ├── covert_to_geojson.txt - Script text for converting spatial boundary data to GeoJSON format.
+│   ├── ForecasterClass.txt - Main forecasting engine class text covering feature engineering, training, and prediction logic.
+│   ├── geographi_lookups_upload.txt - Script text for loading geographic lookup tables used for joins and mapping.
+│   ├── GlobalState.txt - Shared global state definitions used across the application runtime.
+│   ├── import_electoral_wards.txt - Script text for importing electoral ward reference and boundary linkage data.
+│   ├── Interfaces.txt - Interface and contract definitions used between program components.
+│   ├── IRP_Computer_Program.txt - Core application orchestration script text for the IRP forecasting program.
+│   ├── MapOrchestrator.txt - Map orchestration module text for loading boundaries and rendering forecast map outputs.
+│   ├── master.txt - Top-level control script text for running the end-to-end processing/forecast workflow.
+│   ├── output_area_to_wards.txt - Script text for mapping output areas to ward geographies.
+│   ├── Results _processing_1_(extraction).txt - Stage 1 results pipeline script text for raw data extraction.
+│   ├── Results _processing_2_(cleaning).txt - Stage 2 results pipeline script text for cleaning and standardization.
+│   ├── Results _processing_3_(upload).txt - Stage 3 results pipeline script text for loading cleaned outputs.
+│   ├── shp_attributes.txt - Script text for reading and processing shapefile attribute data.
+│   ├── update_cc_codes.txt - Script text for updating county council codes and related identifiers.
+│   ├── update_poll_shares.txt - Script text for refreshing poll-share fields used by forecasting features.
+│   ├── ward_oa_lookup.txt - Script text for ward-to-output-area lookup generation and maintenance.
+│   ├── wd_code_filler.txt - Script text for filling missing ward code values and repairing identifiers.
+│   └── widgets.txt - UI widget logic text used by the program interface layer.
+├── CS Fast-Track Ethical Approval Form IM.pdf - Ethics approval documentation associated with the project and research workflow.
+├── Data/ - Input datasets, shapefiles, lookup tables, and processed reference assets used by the forecasting and mapping pipeline.
+│   ├── 2011_census/ - 2011 census indicator tables (age, tenure, class, sex, and related demographic features).
+│   ├── 2021_census/ - 2021 census indicator tables aligned to the same feature families for updated demographic baselines.
+│   ├── 2026 Boundaries/ - 2026 boundary shapefiles and supporting components for electoral geography.
+│   ├── Boundary Data 2/ - Additional boundary datasets and supporting files used for fallback or supplementary mapping.
+│   ├── Council Results - Central Bedfordshire.csv - Council election results dataset for Central Bedfordshire used in analysis/training.
+│   ├── County Electoral Division (May 2025) Boundaries EN BFE/ - Official county electoral division boundaries for England (May 2025 release).
+│   ├── csv/ - General-purpose CSV data storage for imported or intermediate tabular datasets.
+│   ├── democracy club/ - Democracy Club sourced election data files and related ingestion resources.
+│   ├── election_results/ - Election results source files used as forecast model training and validation inputs.
+│   ├── Geographic_lookups/ - Geographic lookup tables linking administrative units and spatial identifiers.
+│   ├── Lookups/ - Additional project lookup files used during transformation, matching, and enrichment.
+│   ├── LSOA_(2021)_to_Electoral_Ward_(2025)_to_LAD_(2025)_Best_Fit_Lookup_in_EW_v2/ - Best-fit crosswalk between 2021 LSOA, 2025 wards, and 2025 LADs in England and Wales.
+│   ├── OA_2021_EW_BGC_V2.cpg - Character encoding definition for the OA 2021 shapefile attribute table.
+│   ├── OA_2021_EW_BGC_V2.dbf - Attribute table containing non-geometry fields for OA 2021 boundary records.
+│   ├── OA_2021_EW_BGC_V2.prj - Coordinate reference system definition for OA 2021 spatial data.
+│   ├── OA_2021_EW_BGC_V2.shp - Main geometry file for OA 2021 boundary polygons.
+│   ├── OA_2021_EW_BGC_V2.shp.xml - Metadata file describing provenance and schema information for the OA shapefile.
+│   ├── OA_2021_EW_BGC_V2.shx - Shape index file supporting fast geometry access for the OA shapefile.
+│   └── processed/ - Curated and transformed datasets prepared for model consumption and reporting.
+└── outputs/ - Generated artifacts from program execution, including forecasts, figures, and logs.
+    ├── election_forecast_results.csv - Exported forecast table containing model prediction outputs.
+    ├── figures/ - Saved charts, SHAP plots, and spatial visualization outputs.
+    └── logs/ - Run logs and diagnostic records for pipeline execution and troubleshooting.
