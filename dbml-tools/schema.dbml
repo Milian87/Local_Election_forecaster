@@ -1,0 +1,155 @@
+Table "candidate_aliases" {
+  "alias_id" int [pk, not null, increment]
+  "candidate_id" int
+  "alias_name" varchar(255)
+
+  Indexes {
+    candidate_id [name: "candidate_id"]
+  }
+}
+
+Table "candidate_election_snapshots" {
+  "candidate_id" int [not null]
+  "election_year" int [not null]
+  "total_prior_campaigns_contested" int [default: '0']
+  "total_prior_wins" int [default: '0']
+  "runs_in_current_cc_area" int [default: '0']
+  "is_high_profile_figure" tinyint(1) [default: '0']
+
+  Indexes {
+    (candidate_id, election_year) [pk]
+  }
+}
+
+Table "candidates" {
+  "candidate_id" int [pk, not null, increment]
+  "candidate_name" varchar(255) [not null]
+  "registered_party" varchar(255) [not null]
+}
+
+Table "census" {
+  "oa_code" varchar(9) [not null, note: 'ONS 9-character Output Area (OA) code']
+  "census_year" int [not null]
+  "pct_age_18_29" decimal(5,2) [not null, note: 'Percentage of population aged 18-29']
+  "pct_age_30_65" decimal(5,2) [not null, note: 'Percentage of population aged 30-65']
+  "pct_age_over_65" decimal(5,2) [not null, note: 'Percentage of population aged over 65']
+  "pct_male" decimal(5,2) [not null, note: 'Percentage of population that is male']
+  "pct_female" decimal(5,2) [not null, note: 'Percentage of population that is female']
+  "pct_student" decimal(5,2) [not null, note: 'Percentage of population who are students']
+  "pct_bch" decimal(5,2) [not null, note: 'Percentage of population with a bachelor’s degree or higher']
+  "pct_wk_class" decimal(5,2) [not null, note: 'Percentage of population in Working Social Class']
+  "pct_mid_class" decimal(5,2) [not null, note: 'Percentage of population in Middle Social Class']
+  "pct_own_hme" decimal(5,2) [not null, note: 'Percentage of population who own their home']
+  "pct_rent" decimal(5,2) [not null, note: 'Percentage of population who rent their home']
+  "pct_fb" decimal(5,2) [not null, note: 'Percentage of foreign-born population']
+  "pop_den" decimal(12,2)
+  "oa_pop" int
+
+  Indexes {
+    (oa_code, census_year) [pk]
+    census_year [name: "idx_census_year"]
+    oa_code [name: "idx_census_oa"]
+  }
+}
+
+Table "census_demographics" {
+  "oa_code" varchar(12) [not null]
+  "census_year" smallint [not null]
+  "ward_pop" int [not null]
+  "pop_den" decimal(10,2) [not null, default: '0.00']
+  "vote_shr" decimal(10,2) [not null, default: '0.00']
+  "pct_age_18_29" decimal(10,2) [not null, default: '0.00']
+  "pct_age_30_65" decimal(10,2) [not null, default: '0.00']
+  "pct_age_over_65" decimal(10,2) [not null, default: '0.00']
+  "pct_male" decimal(10,2) [not null, default: '0.00']
+  "pct_female" decimal(10,2) [not null, default: '0.00']
+  "pct_student" decimal(10,2) [not null, default: '0.00']
+  "pct_bch" decimal(10,2) [not null, default: '0.00']
+  "pct_wk_class" decimal(10,2) [not null, default: '0.00']
+  "pct_mid_class" decimal(10,2) [not null, default: '0.00']
+  "pct_own_hme" decimal(10,2) [not null, default: '0.00']
+  "pct_rent" decimal(10,2) [not null, default: '0.00']
+  "pct_fb" decimal(10,2) [not null, default: '0.00']
+
+  Indexes {
+    (oa_code, census_year) [pk]
+  }
+}
+
+Table "census_pop" {
+  "oa_code" varchar(20) [not null]
+  "census_year" int [not null]
+  "total_population" int [not null]
+  "area_sq_km" decimal(12,6) [not null]
+
+  Indexes {
+    (oa_code, census_year) [pk]
+    oa_code [name: "oa_code"]
+    census_year [name: "census_year"]
+  }
+}
+
+Table "county_codes" {
+  "cc_code" varchar(9) [pk, not null]
+  "council_name" varchar(150) [not null]
+}
+
+Table "election_results" {
+  "wd_code" varchar(20) [not null]
+  "election_date" date [not null]
+  "candidate_id" int [not null]
+  "seats_available" int
+  "is_uncontested" tinyint(1)
+  "votes_received" int
+  "vote_share" decimal(5,2)
+  "election_year" int
+  "is_elected" tinyint(1)
+  "is_incumbent_cllr" tinyint(1)
+  "national_poll_party_share" decimal(5,2)
+  "prior_ward_closeness_margin" decimal(5,2)
+
+  Indexes {
+    (wd_code, election_date, candidate_id) [pk]
+    candidate_id [name: "candidate_id"]
+    wd_code [name: "idx_election_results_wd"]
+  }
+}
+
+Table "electoral_wards" {
+  "wd_code" varchar(20) [pk, not null]
+  "ward_name" varchar(255) [not null]
+  "cc_code" varchar(20)
+  "lad_code" varchar(20)
+}
+
+Table "electoral_wards_history" {
+  "wd_code" varchar(20) [not null]
+  "election_year" int [not null]
+  "ward_name" varchar(255) [not null]
+  "cc_code" varchar(20) [not null]
+
+  Indexes {
+    (wd_code, election_year) [pk]
+  }
+}
+
+Table "geographic_lookup" {
+  "wd_code" varchar(9) [not null]
+  "oa_code" varchar(9) [not null]
+  "lookup_version_year" int [not null]
+
+  Indexes {
+    (wd_code, oa_code, lookup_version_year) [pk]
+    (lookup_version_year, wd_code) [name: "idx_lookup_version"]
+    wd_code [name: "idx_geographic_lookup_wd"]
+    oa_code [name: "idx_geographic_lookup_oa"]
+  }
+}
+
+Ref "candidate_aliases_ibfk_1":"candidates"."candidate_id" ?<? "candidate_aliases"."candidate_id"
+
+Ref "candidate_election_snapshots_ibfk_1":"candidates"."candidate_id" <? "candidate_election_snapshots"."candidate_id" [update: cascade, delete: cascade]
+
+Ref "election_results_ibfk_1":"candidates"."candidate_id" <? "election_results"."candidate_id"
+
+Ref "geographic_lookup_ibfk_1":"electoral_wards"."wd_code" <? "geographic_lookup"."wd_code" [update: cascade, delete: restrict]
