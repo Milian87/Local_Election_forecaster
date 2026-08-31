@@ -922,7 +922,46 @@ class GaugeWidget(QWidget):
         value_str = f"{self.value}%"
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop, value_str)
 
+class TransparentTableWidget(QtWidgets.QTableWidget):
+    def __init__(self, headers, parent=None):
+        super().__init__(parent)
 
+        self.setColumnCount(len(headers))
+        self.setHorizontalHeaderLabels(headers)
+        self.setShowGrid(True)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setAlternatingRowColors(False)
+
+        self.viewport().setAttribute(
+            QtCore.Qt.WidgetAttribute.WA_TranslucentBackground
+        )
+
+        self.setStyleSheet("""
+            QTableWidget {
+                background-color: transparent;
+                alternate-background-color: transparent;
+                border: none;
+                gridline-color: rgba(0, 0, 0, 80);
+            }
+
+            QTableWidget::item {
+                background-color: transparent;
+                color: black;
+                padding: 5px;
+            }
+
+            QTableWidget::item:selected {
+                background-color: rgba(70, 130, 180, 100);
+                color: white;
+            }
+
+            QHeaderView::section {
+                background-color: rgba(255, 255, 255, 170);
+                color: black;
+                border: none;
+                padding: 5px;
+            }
+        """)
 
 # Usage in your GUI:
 # gauge = GaugeWidget(x=125, y=125)
