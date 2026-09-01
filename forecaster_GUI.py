@@ -146,6 +146,29 @@ class MainWindow(QtWidgets.QMainWindow):
         for name, button in self.buttons.items():
             button.set_style(active_blue_button_style if name == screen_name else blue_button_style)
 
+        if screen_name == "Forecast":  # TEMP: run the forecaster system when the Forecast nav button is pressed
+            self._run_temp_forecast_confirmation()  # TEMP: remove this call once the forecaster system is confirmed working
+
+    def _run_temp_forecast_confirmation(self):  # TEMP: temporary end-to-end confirmation hook, safe to delete
+        if getattr(self, "_temp_forecast_ran", False):  # TEMP: only run once per app session
+            return
+        self._temp_forecast_ran = True  # TEMP: guard flag for the one-shot run above
+        from forecaster_forecast_service import Forecaster, Forecast_Repository, ForecastService  # TEMP: temporary import
+        forecaster = Forecaster(use_xgboost=False)  # TEMP: fast Random Forest path for a quick confirmation run
+        repository = Forecast_Repository()  # TEMP: repository owns its own DB connection
+        service = ForecastService(forecaster, repository)  # TEMP: coordinator wiring repository + forecaster
+        try:
+            forecast_df = service.run_forecast()  # TEMP: load data -> prepare_data -> train_model -> predict
+            message = (
+                f"Forecast pipeline ran successfully: {len(forecast_df)} rows "
+                f"across {forecast_df['wd_code'].nunique()} wards."
+            )  # TEMP: confirmation message
+            print(f"[TEMP FORECAST CHECK] {message}")  # TEMP: console confirmation
+            QtWidgets.QMessageBox.information(self, "Forecast Check", message)  # TEMP: visible GUI confirmation
+        except Exception as error:  # TEMP: surface pipeline failures without crashing the GUI
+            print(f"[TEMP FORECAST CHECK] Forecast pipeline failed: {error}")  # TEMP: console failure output
+            QtWidgets.QMessageBox.critical(self, "Forecast Check Failed", str(error))  # TEMP: visible GUI failure
+
 class BaseScreen(QtWidgets.QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
