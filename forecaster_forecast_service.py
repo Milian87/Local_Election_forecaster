@@ -21,6 +21,8 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split, GridSearchCV
 
+from forecaster_interfaces import iMachineLearningInterface
+
 try:
     from xgboost import XGBRegressor
     XGBOOST_AVAILABLE = True
@@ -29,7 +31,75 @@ except ImportError:
     XGBOOST_AVAILABLE = False
 
 
-class Forecaster:
+def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Shared query logic used by both Forecaster (standalone mode) and Forecast_Repository."""
+    with engine.connect() as conn:
+        poll_col = conn.execute(
+            text(
+                """
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = :schema_name
+                  AND TABLE_NAME = 'election_results'
+                  AND COLUMN_NAME IN ('national_poll_party_share', 'national_poll_share')
+                ORDER BY CASE COLUMN_NAME WHEN 'national_poll_party_share' THEN 1 ELSE 2 END
+                LIMIT 1
+                """
+            ),
+            {"schema_name": db_config['database']},
+        ).scalar()
+
+    if not poll_col:
+        raise RuntimeError(
+            "Missing national poll share column in election_results. "
+            "Expected one of: national_poll_party_share, national_poll_share"
+        )
+
+    query = """
+        SELECT 
+            er.wd_code, ew.cc_code AS cc_code, cand.registered_party AS party_name, cand.candidate_name,
+            er.election_year, er.candidate_id, AVG(er.vote_share) AS party_vote_share, 
+            MAX(er.is_incumbent_cllr) AS has_incumbent_boost,
+            AVG(er.{poll_col}) AS national_poll_share,
+            (SUM(c.oa_pop) / SUM(c.oa_pop / NULLIF(c.pop_den, 0))) AS ward_population_density,
+            AVG(c.pct_student) AS pct_student, AVG(c.pct_own_hme) AS pct_own_hme, AVG(c.pct_rent) AS pct_rent, 
+            AVG(c.pct_age_18_29) AS pct_age_18_29, AVG(c.pct_age_30_65) AS pct_age_30_65, 
+            AVG(c.pct_age_over_65) AS pct_age_over_65, AVG(c.pct_wk_class) AS pct_wk_class, 
+            AVG(c.pct_mid_class) AS pct_mid_class, AVG(c.pct_bch) AS pct_bch, 
+            AVG(c.pct_female) AS pct_female, AVG(c.pct_male) AS pct_male
+        FROM election_results er
+        JOIN candidates cand ON er.candidate_id = cand.candidate_id
+        LEFT JOIN electoral_wards ew ON er.wd_code = ew.wd_code
+        LEFT JOIN geographic_lookup gl ON er.wd_code = gl.wd_code
+        LEFT JOIN census c ON gl.oa_code = c.oa_code
+        WHERE er.is_uncontested = 0
+        GROUP BY er.wd_code, ew.cc_code, cand.registered_party, cand.candidate_name, er.election_year, er.candidate_id;
+    """.format(poll_col=poll_col)
+    df_raw = pd.read_sql(query, con=engine)
+
+    try:
+        ward_name_query = """
+            SELECT wd_code, ward_name
+            FROM electoral_wards
+            UNION ALL
+            SELECT wd_code, ward_name
+            FROM electoral_wards_history
+        """
+        df_wards = pd.read_sql(ward_name_query, con=engine)
+    except Exception:
+        df_wards = pd.read_sql("SELECT wd_code, ward_name FROM electoral_wards;", con=engine)
+
+    df_wards['wd_code'] = df_wards['wd_code'].astype(str)
+    df_wards['ward_name'] = df_wards['ward_name'].astype(str)
+    df_wards = (
+        df_wards[df_wards['ward_name'].str.strip() != ""]
+        .drop_duplicates(subset=['wd_code'], keep='first')
+    )
+    ward_name_map = dict(zip(df_wards['wd_code'], df_wards['ward_name']))
+    return df_raw, ward_name_map
+
+
+class Forecaster(iMachineLearningInterface):
     """
     Advanced predictive engine that transforms targets to change-in-share (Δ)
     and engineers tactical metrics (top_2 margins, wasted_vote flags, left_right indexes)
@@ -87,6 +157,30 @@ class Forecaster:
 
         # Optional council filter for targeted views; None means all councils.
         self.cc_code = "E10000020"
+
+        # Populated by train_and_evaluate(); backs evaluate_model()
+        self.last_rmse = None
+        self.last_r2 = None
+
+    def prepare_data(self, raw_data: pd.DataFrame, ward_name_map: dict[str, str]) -> None:
+        """iMachineLearningInterface entry point: accept externally supplied data instead of querying internally."""
+        self.df_raw = raw_data.copy()
+        self.ward_name_map = dict(ward_name_map)
+        self._engineer_features()
+
+    def train_model(self) -> None:
+        """iMachineLearningInterface entry point delegating to the existing train/evaluate/predict pipeline."""
+        self.train_and_evaluate()
+
+    def evaluate_model(self) -> dict[str, float]:
+        """iMachineLearningInterface entry point returning the ensemble's holdout metrics from the last training run."""
+        if self.last_rmse is None or self.last_r2 is None:
+            raise RuntimeError("Model must be trained via train_model() before evaluation.")
+        return {"rmse": self.last_rmse, "r2": self.last_r2}
+
+    def predict(self) -> pd.DataFrame:
+        """iMachineLearningInterface entry point returning the forecast DataFrame."""
+        return self.forecast
 
     def tune_hyperparameters(self):
         """
@@ -230,76 +324,18 @@ class Forecaster:
         return group
 
     def extract_and_prepare_data(self):
-        """Queries database and executes advanced custom pandas preprocessing loops."""
+        """Standalone/legacy path: queries the database directly, then engineers features."""
         print("Extracting demographics and base party results matrices...")
         try:
-            with self.engine.connect() as conn:
-                poll_col = conn.execute(
-                    text(
-                        """
-                        SELECT COLUMN_NAME
-                        FROM INFORMATION_SCHEMA.COLUMNS
-                        WHERE TABLE_SCHEMA = :schema_name
-                          AND TABLE_NAME = 'election_results'
-                          AND COLUMN_NAME IN ('national_poll_party_share', 'national_poll_share')
-                        ORDER BY CASE COLUMN_NAME WHEN 'national_poll_party_share' THEN 1 ELSE 2 END
-                        LIMIT 1
-                        """
-                    ),
-                    {"schema_name": self.db_config['database']},
-                ).scalar()
-
-            if not poll_col:
-                raise RuntimeError(
-                    "Missing national poll share column in election_results. "
-                    "Expected one of: national_poll_party_share, national_poll_share"
-                )
-
-            query = """
-                SELECT 
-                    er.wd_code, ew.cc_code AS cc_code, cand.registered_party AS party_name, cand.candidate_name,
-                    er.election_year, er.candidate_id, AVG(er.vote_share) AS party_vote_share, 
-                    MAX(er.is_incumbent_cllr) AS has_incumbent_boost,
-                    AVG(er.{poll_col}) AS national_poll_share,
-                    (SUM(c.oa_pop) / SUM(c.oa_pop / NULLIF(c.pop_den, 0))) AS ward_population_density,
-                    AVG(c.pct_student) AS pct_student, AVG(c.pct_own_hme) AS pct_own_hme, AVG(c.pct_rent) AS pct_rent, 
-                    AVG(c.pct_age_18_29) AS pct_age_18_29, AVG(c.pct_age_30_65) AS pct_age_30_65, 
-                    AVG(c.pct_age_over_65) AS pct_age_over_65, AVG(c.pct_wk_class) AS pct_wk_class, 
-                    AVG(c.pct_mid_class) AS pct_mid_class, AVG(c.pct_bch) AS pct_bch, 
-                    AVG(c.pct_female) AS pct_female, AVG(c.pct_male) AS pct_male
-                FROM election_results er
-                JOIN candidates cand ON er.candidate_id = cand.candidate_id
-                LEFT JOIN electoral_wards ew ON er.wd_code = ew.wd_code
-                LEFT JOIN geographic_lookup gl ON er.wd_code = gl.wd_code
-                LEFT JOIN census c ON gl.oa_code = c.oa_code
-                WHERE er.is_uncontested = 0
-                GROUP BY er.wd_code, ew.cc_code, cand.registered_party, cand.candidate_name, er.election_year, er.candidate_id;
-            """.format(poll_col=poll_col)
-            self.df_raw = pd.read_sql(query, con=self.engine)
-
-            try:
-                ward_name_query = """
-                    SELECT wd_code, ward_name
-                    FROM electoral_wards
-                    UNION ALL
-                    SELECT wd_code, ward_name
-                    FROM electoral_wards_history
-                """
-                df_wards = pd.read_sql(ward_name_query, con=self.engine)
-            except Exception:
-                df_wards = pd.read_sql("SELECT wd_code, ward_name FROM electoral_wards;", con=self.engine)
-
-            df_wards['wd_code'] = df_wards['wd_code'].astype(str)
-            df_wards['ward_name'] = df_wards['ward_name'].astype(str)
-            df_wards = (
-                df_wards[df_wards['ward_name'].str.strip() != ""]
-                .drop_duplicates(subset=['wd_code'], keep='first')
-            )
-            self.ward_name_map = dict(zip(df_wards['wd_code'], df_wards['ward_name']))
+            self.df_raw, self.ward_name_map = _query_election_data(self.engine, self.db_config)
         except Exception as e:
             print(f"Database query operation failed: {e}")
             raise
 
+        self._engineer_features()
+
+    def _engineer_features(self) -> None:
+        """Shared pandas preprocessing used by both extract_and_prepare_data() and prepare_data()."""
         print("Processing localized historical party baseline frameworks...")
         historical_averages = (
             self.df_raw[self.df_raw['election_year'] < 2026]
@@ -397,6 +433,8 @@ class Forecaster:
         
         ensemble_rmse = np.sqrt(mean_squared_error(y_te, y_pred_ensemble))
         ensemble_r2 = r2_score(y_te, y_pred_ensemble)
+        self.last_rmse = float(ensemble_rmse)
+        self.last_r2 = float(ensemble_r2)
 
         # 3. Comparative Logging Output
         print("\n====================================================")
@@ -524,35 +562,52 @@ class Forecaster:
         print(f"Saved forecast results to: {destination}")
         return destination
 
-class ForecastService:
-    def __init__(self, forecaster: Forecaster):
-        self.forecaster = forecaster
-        self.map_orchestrator = map_orchestrator
-
 class Forecast_Repository:
-    def __init__(self, forecaster: Forecaster):
-        self.forecaster = forecaster
+    """Owns the database connection and forecast I/O; independent of any Forecaster instance."""
+    def __init__(self, db_config=None):
+        self.database = MySQLDatabase(db_config)
+        self.engine = self.database.engine
+        self.db_config = self.database.db_config
         self.map_orchestrator = MapOrchestrator(_resolve_division_boundary_path(Path(__file__).parent)) # type: ignore
 
-    def get_forecast_summary(self, cc_code=None):
+    def load_election_data(self) -> tuple[pd.DataFrame, dict[str, str]]:
+        """Queries election, candidate, ward, and census tables used to prepare forecast inputs."""
+        return _query_election_data(self.engine, self.db_config)
+
+    def get_forecast_summary(self, forecaster: Forecaster, cc_code=None):
         """Returns a summary DataFrame of forecasted vs. current seats by party."""
-        return self.forecaster.get_summary(cc_code=cc_code)
+        return forecaster.get_summary(cc_code=cc_code)
 
-    def get_forecast_dataframe(self):
+    def get_forecast_dataframe(self, forecaster: Forecaster):
         """Returns the full forecast DataFrame with ward names included."""
-        return self.forecaster.forecast
+        return forecaster.forecast
 
-    def save_forecast_to_csv(self, output_path: str = "election_forecast_results.csv") -> Path:
+    def save_forecast_to_csv(self, forecaster: Forecaster, output_path: str = "election_forecast_results.csv") -> Path:
         """Saves the forecast DataFrame to a CSV file."""
-        return self.forecaster.save_forecast_to_csv(output_path=output_path)
+        return forecaster.save_forecast_to_csv(output_path=output_path)
 
-    def get_ward_shap_explanation(self, ward_name_input, feature_to_plot):
+    def get_ward_shap_explanation(self, forecaster: Forecaster, ward_name_input, feature_to_plot):
         """Returns a GeoDataFrame with SHAP values for a specific ward and feature."""
-        return get_ward_shap_explanation(ward_name_input, self.forecaster, self.map_orchestrator, feature_to_plot)
+        return get_ward_shap_explanation(ward_name_input, forecaster, self.map_orchestrator, feature_to_plot)
 
-    def interactive_forecast_lookup(self):
+    def interactive_forecast_lookup(self, forecaster: Forecaster):
         """Starts an interactive CLI loop for ward code or name lookup."""
-        interactive_forecast_lookup(self.forecaster)
+        interactive_forecast_lookup(forecaster)
+
+
+class ForecastService:
+    """Coordinator: pulls data from the repository and drives the forecaster's ML lifecycle."""
+    def __init__(self, forecaster: Forecaster, repository: Forecast_Repository):
+        self.forecaster = forecaster
+        self.repository = repository
+        self.map_orchestrator = repository.map_orchestrator
+
+    def run_forecast(self) -> pd.DataFrame:
+        """Loads inputs from the repository, then prepares/trains/predicts via the forecaster."""
+        raw_data, ward_name_map = self.repository.load_election_data()
+        self.forecaster.prepare_data(raw_data, ward_name_map)
+        self.forecaster.train_model()
+        return self.forecaster.predict()
 
 
 

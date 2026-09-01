@@ -26,21 +26,25 @@ class Data_Uploader_Interface(ABC):
     def send_data(self) -> pd.DataFrame:
         pass
 
-class MachineLearningInterface(ABC):
+class iMachineLearningInterface(ABC):
     @abstractmethod
-    def __init__(self, model_type):
+    def prepare_data(
+        self,
+        raw_data: pd.DataFrame,
+        ward_name_map: dict[str, str],
+    ) -> None:
         pass
 
     @abstractmethod
-    def train_model(self, training_data):
+    def train_model(self) -> None:
         pass
 
     @abstractmethod
-    def evaluate_model(self, test_data):
+    def evaluate_model(self) -> dict[str, float]:
         pass
 
     @abstractmethod
-    def predict(self, input_data):
+    def predict(self) -> pd.DataFrame:
         pass
 
 class iDatabaseInterface(ABC):
