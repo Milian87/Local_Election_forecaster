@@ -383,26 +383,6 @@ class Forecaster(iMachineLearningInterface):
         self.future_data['final_forecast_share'] = self.future_data['predicted_party_share']
         self.evaluator = ModelEvaluator(self.future_data, cc_code=self.cc_code)
 
-    def generate_shap_analysis(self, primary_interaction_feature: str = "top_2"):
-        """Delegate SHAP analysis to the explainability engine."""
-        if self.X_train_features is None:
-            raise RuntimeError("Model must be trained before generating SHAP analysis.")
-        self.explainability_engine.generate_shap_analysis(
-            model=self.model,
-            training_features=self.X_train_features,
-            primary_interaction_feature=primary_interaction_feature,
-        )
-        self.explainer = self.explainability_engine.explainer
-        self.shap_values = self.explainability_engine.shap_values
-
-    def verify_winners_loop(self) -> pd.DataFrame:
-        """Delegate winner verification to the forecast evaluator."""
-        if self.evaluator is None:
-            raise RuntimeError(
-                "The model must be trained before verifying winners."
-            )
-        return self.evaluator.verify_winners_loop()
-
     def forecast(self) -> pd.DataFrame:
         """Return forecast rows with human-readable ward names."""
         if self.future_data is None:
@@ -610,6 +590,9 @@ class Forecast_2(iMachineLearningInterface):
 
 
     pass
+#==============================================================================
+# Forecast Repository and Service Classes
+#==============================================================================
 
 class Forecast_Repository:
     """Owns the database connection and forecast I/O; independent of any Forecaster instance."""
