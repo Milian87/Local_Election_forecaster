@@ -23,14 +23,12 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split, GridSearchCV
 
 from forecaster_interfaces import iMachineLearningInterface
-
 try:
     from xgboost import XGBRegressor
     XGBOOST_AVAILABLE = True
 except ImportError:
     XGBRegressor = None
     XGBOOST_AVAILABLE = False
-
 
 def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str]]:
     """Shared query logic used by both Forecaster (standalone mode) and Forecast_Repository."""
@@ -101,7 +99,6 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
 #==============================================================================
 # Model 1: May - August 2026 Local Election Forecast dissertation
 #==============================================================================
-
 class Forecaster(iMachineLearningInterface):
     """
     Advanced predictive engine that transforms targets to change-in-share (Δ)
@@ -404,8 +401,6 @@ class Forecaster(iMachineLearningInterface):
         forecast_df.to_csv(destination, index=False)
         print(f"Saved forecast results to: {destination}")
         return destination
-
-
 #==============================================================================
 # Model 2: September 2026
 #==============================================================================
@@ -414,7 +409,6 @@ class Forecast_2(iMachineLearningInterface):
 #==============================================================================
 # Forecast Helper Functions
 #==============================================================================
-
 class FeatureEngineer():
     def __init__(self, df_raw: pd.DataFrame):
         self.df_raw = df_raw.copy()
