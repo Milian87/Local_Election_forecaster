@@ -405,6 +405,16 @@ class Forecaster(iMachineLearningInterface):
         print(f"Saved forecast results to: {destination}")
         return destination
 
+
+#==============================================================================
+# Model 2: September 2026
+#==============================================================================
+class Forecast_2(iMachineLearningInterface):
+    pass
+#==============================================================================
+# Forecast Helper Functions
+#==============================================================================
+
 class FeatureEngineer():
     def __init__(self, df_raw: pd.DataFrame):
         self.df_raw = df_raw.copy()
@@ -582,14 +592,6 @@ class ExplainabilityEngine:
             )
         plt.show()
 
-
-#==============================================================================
-# Model 2: September 2026
-#==============================================================================
-class Forecast_2(iMachineLearningInterface):
-
-
-    pass
 #==============================================================================
 # Forecast Repository and Service Classes
 #==============================================================================
