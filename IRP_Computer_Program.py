@@ -15,7 +15,7 @@ from IRP_GUIs import DashboardGUI, ForecastGUI, DataManagerGUI
 from widgets import ButtonWidget, blue_button_style, active_blue_button_style, red_button_style, green_button_style, FormRow, GaugeWidget
 from Data import SampleData
 from ForecasterClass import Forecaster
-from Controllers import DashboardController, ForecastController, DataManagerController, ScreenFactory
+from forecaster_Controllers import DashboardController, ForecastController, DataManagerController, ScreenFactory
 
 
 class IRPComputerProgram:

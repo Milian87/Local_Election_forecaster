@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from PySide6 import QtCore, QtGui
 import PySide6.QtWidgets as QtWidgets
-from Controllers import DashboardController
+from forecaster_Controllers import DashboardController
 from Data import SampleData
 from forecaster_GUI import DataScreen
 from forecaster_data import MySQLDatabase

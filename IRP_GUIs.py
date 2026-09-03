@@ -14,7 +14,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 import PySide6.QtWidgets as QtWidgets
 from widgets import ButtonWidget, blue_button_style, active_blue_button_style, red_button_style, Map, green_button_style, FormRow, GaugeWidget
 from Data import SampleData
-from Controllers import DashboardController
+from forecaster_Controllers import DashboardController
 from Interfaces import ScreenInterface
 from GlobalState import map_orchestrator
 

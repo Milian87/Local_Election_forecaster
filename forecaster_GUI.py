@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 from PySide6 import QtCore, QtGui
 import PySide6.QtWidgets as QtWidgets
-from Controllers import DashboardController
+from forecaster_Controllers import DashboardController
 from Data import SampleData
 from widgets import (
     ButtonWidget,
