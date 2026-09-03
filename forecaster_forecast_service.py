@@ -8,6 +8,7 @@
 
 import os
 from pathlib import Path
+from pyexpat import model
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -97,7 +98,9 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
     )
     ward_name_map = dict(zip(df_wards['wd_code'], df_wards['ward_name']))
     return df_raw, ward_name_map
-
+#==============================================================================
+# Model 1: May - August 2026 Local Election Forecast dissertation
+#==============================================================================
 
 class Forecaster(iMachineLearningInterface):
     """
@@ -108,6 +111,8 @@ class Forecaster(iMachineLearningInterface):
     def __init__(self, db_config=None, use_xgboost=True):
         self.database = MySQLDatabase(db_config)
         self.data_manager = DataManager(self.database)
+        self.feature_engineer = None
+        self.evaluator = None
         # Expose engine/db_config directly since query methods below use them
         self.engine = self.database.engine
         self.db_config = self.database.db_config
@@ -154,6 +159,7 @@ class Forecaster(iMachineLearningInterface):
         self.X_train_features = None  
         self.explainer = None
         self.shap_values = None
+        self.explainability_engine = ExplainabilityEngine()
 
         # Optional council filter for targeted views; None means all councils.
         self.cc_code = "E10000020"
@@ -166,21 +172,9 @@ class Forecaster(iMachineLearningInterface):
         """iMachineLearningInterface entry point: accept externally supplied data instead of querying internally."""
         self.df_raw = raw_data.copy()
         self.ward_name_map = dict(ward_name_map)
-        self._engineer_features()
-
-    def train_model(self) -> None:
-        """iMachineLearningInterface entry point delegating to the existing train/evaluate/predict pipeline."""
-        self.train_and_evaluate()
-
-    def evaluate_model(self) -> dict[str, float]:
-        """iMachineLearningInterface entry point returning the ensemble's holdout metrics from the last training run."""
-        if self.last_rmse is None or self.last_r2 is None:
-            raise RuntimeError("Model must be trained via train_model() before evaluation.")
-        return {"rmse": self.last_rmse, "r2": self.last_r2}
-
-    def predict(self) -> pd.DataFrame:
-        """iMachineLearningInterface entry point returning the forecast DataFrame."""
-        return self.forecast
+        self.feature_engineer = FeatureEngineer(self.df_raw)
+        self.feature_engineer.engineer_features()
+        self.df_raw = self.feature_engineer.df_raw
 
     def tune_hyperparameters(self):
         """
@@ -191,8 +185,8 @@ class Forecaster(iMachineLearningInterface):
             self.extract_and_prepare_data()
 
         # Ensure party_label exists prior to feature matrix generation
-        self.df_raw['party_label'] = self.df_raw['party_name']
-        df_encoded = pd.get_dummies(self.df_raw, columns=['party_name'], drop_first=False)
+        self.df_raw['party_label'] = self.df_raw['party_name']  # pyright: ignore[reportOptionalSubscript]
+        df_encoded = pd.get_dummies(self.df_raw, columns=['party_name'], drop_first=False)  # pyright: ignore[reportArgumentType]
 
         historical_data = df_encoded[df_encoded['election_year'] < 2026].copy()
         historical_data = historical_data.dropna(subset=['diff_vote_share'] + self.census_features)
@@ -288,41 +282,6 @@ class Forecaster(iMachineLearningInterface):
             
         return pd.DataFrame(summary_rows)
 
-    def map_ideology(self, party_name):
-        """Maps categorical party text to a continuous scale (-1.0 Left to +1.0 Right)."""
-        mapping = {
-            'Conservative': 0.6,
-            'Reform UK': 0.75,
-            'Labour': -0.36,
-            'Green Party': -0.55,
-            'Liberal Democrats': -0.23,
-            'Communist Party of Britain': -1.0,
-            'Independent': 0.0,
-            'Restore Britain': 1.0,
-        }
-        return mapping.get(party_name, 0.0)
-
-    def calculate_prior_top2_margin(self, group):
-        """Calculates the distance between 1st and 2nd place in the previous cycle."""
-        group = group.sort_values(by=['election_year', 'party_vote_share'], ascending=[True, False])
-        unique_years = sorted(group['election_year'].unique())
-        margin_mapping = {}
-        
-        for i, year in enumerate(unique_years):
-            if i == 0:
-                margin_mapping[year] = np.nan
-                continue
-            prior_year = unique_years[i - 1]
-            prior_data = group[group['election_year'] == prior_year]
-            if len(prior_data) >= 2:
-                shares = prior_data['party_vote_share'].values
-                margin_mapping[year] = shares[0] - shares[1]
-            else:
-                margin_mapping[year] = np.nan
-                
-        group['top_2'] = group['election_year'].map(margin_mapping)
-        return group
-
     def extract_and_prepare_data(self):
         """Standalone/legacy path: queries the database directly, then engineers features."""
         print("Extracting demographics and base party results matrices...")
@@ -332,55 +291,9 @@ class Forecaster(iMachineLearningInterface):
             print(f"Database query operation failed: {e}")
             raise
 
-        self._engineer_features()
-
-    def _engineer_features(self) -> None:
-        """Shared pandas preprocessing used by both extract_and_prepare_data() and prepare_data()."""
-        print("Processing localized historical party baseline frameworks...")
-        historical_averages = (
-            self.df_raw[self.df_raw['election_year'] < 2026]
-            .groupby(['wd_code', 'party_name'], group_keys=False)['party_vote_share']
-            .mean().reset_index().rename(columns={'party_vote_share': 'historical_party_ward_mean'})
-        )
-        self.df_raw = pd.merge(self.df_raw, historical_averages, on=['wd_code', 'party_name'], how='left')
-        self.df_raw['historical_party_ward_mean'] = self.df_raw['historical_party_ward_mean'].fillna(15.0)
-
-        self.df_raw['candidate_personal_historical_mean'] = self.df_raw['party_vote_share']
-
-        print("Generating tactical voting features downstream via vector loops...")
-        
-        # 1. Ideological continuous index map (-1.0 to 1.0)
-        self.df_raw['left_right'] = self.df_raw['party_name'].apply(self.map_ideology)
-        
-        # 2. Chronological sort for rank calculation and shift execution
-        self.df_raw = self.df_raw.sort_values(by=['wd_code', 'party_name', 'election_year'])
-        
-        # 3. Dynamic row-level ranking function within cycles
-        self.df_raw['current_ward_rank'] = self.df_raw.groupby(['wd_code', 'election_year'], group_keys=False)['party_vote_share'].rank(ascending=False, method='min')
-        
-        # 4. Generate prior-cycle shifted attributes
-        self.df_raw['prior_vote_share'] = self.df_raw.groupby(['wd_code', 'party_name'], group_keys=False)['party_vote_share'].shift(1)
-        self.df_raw['prior_ward_rank'] = self.df_raw.groupby(['wd_code', 'party_name'], group_keys=False)['current_ward_rank'].shift(1)
-        
-        # 5. Define target shift variable (y = Δ change in vote share)
-        self.df_raw['diff_vote_share'] = self.df_raw['party_vote_share'] - self.df_raw['prior_vote_share']
-        
-        # 6. Binary flag mapping for tactical wasted vote compression
-        self.df_raw['wasted_vote'] = np.where(
-            (self.df_raw['prior_ward_rank'] >= 3) & (self.df_raw['prior_vote_share'] < 15.0), 1, 0
-        )
-        
-        # 7. Multi-candidate top_2 margin execution
-        ward_groups = []
-        for wd_code, group in self.df_raw.groupby('wd_code', sort=False):
-            processed_group = self.calculate_prior_top2_margin(group)
-            processed_group = processed_group.copy()
-            processed_group['wd_code'] = wd_code
-            ward_groups.append(processed_group)
-        self.df_raw = pd.concat(ward_groups, ignore_index=True)
-        
-        # Complete missing initial metrics by mapping broad local footprints
-        self.df_raw['top_2'] = self.df_raw['top_2'].fillna(15.0)
+        self.feature_engineer = FeatureEngineer(self.df_raw)
+        self.feature_engineer.engineer_features()
+        self.df_raw = self.feature_engineer.df_raw
 
     def train_and_evaluate(self):
         """Executes delta-target training and registers verification metrics."""
@@ -468,80 +381,30 @@ class Forecaster(iMachineLearningInterface):
         )
         self.future_data['predicted_party_share'] = self.future_data['predicted_party_share_unclipped'].clip(0.0, 100.0)
         self.future_data['final_forecast_share'] = self.future_data['predicted_party_share']
+        self.evaluator = ModelEvaluator(self.future_data, cc_code=self.cc_code)
 
     def generate_shap_analysis(self, primary_interaction_feature: str = "top_2"):
-        """Calculates TreeSHAP values path-dependently and outputs diagnostic plots."""
+        """Delegate SHAP analysis to the explainability engine."""
         if self.X_train_features is None:
             raise RuntimeError("Model must be trained before generating SHAP analysis.")
-        
-        print("\nComputing SHAP values via Path-Dependent TreeExplainer Model...")
-        
-        self.explainer = shap.TreeExplainer(
-            self.model,
-            feature_perturbation="tree_path_dependent"
+        self.explainability_engine.generate_shap_analysis(
+            model=self.model,
+            training_features=self.X_train_features,
+            primary_interaction_feature=primary_interaction_feature,
         )
-        raw_shap_values = self.explainer.shap_values(self.X_train_features)
-        
-        self.shap_values = shap.Explanation(
-            values=raw_shap_values,
-            base_values=self.explainer.expected_value,
-            data=self.X_train_features.values,
-            feature_names=self.X_train_features.columns #type: ignore
-        )
-        
-        # Plot 1: Modern Global Feature Importance Bar Plot
-        shap.plots.bar(self.shap_values, show=False)
-        plt.title("SHAP Global Feature Importance\n(Mean Absolute Impact on Δ Vote Share)", fontsize=12, pad=15)
-        fig1 = plt.gcf()
-        fig1.set_size_inches(10, 5)
-        plt.tight_layout()
+        self.explainer = self.explainability_engine.explainer
+        self.shap_values = self.explainability_engine.shap_values
 
-        # Plot 2: Dependence Scatter Plot
-        if primary_interaction_feature in self.X_train_features.columns:
-            shap.plots.scatter(self.shap_values[:, primary_interaction_feature], color=self.shap_values, show=False)
-            plt.title(f"Δ Target Dependence Scatter: '{primary_interaction_feature}' Feature Scaling & Interaction", fontsize=12, pad=15)
-            plt.ylabel(f"SHAP Value for {primary_interaction_feature} (Δ Vote Share Impact)")
-            plt.grid(True, alpha=0.25)
-            
-            fig2 = plt.gcf()
-            fig2.set_size_inches(10, 6)
-            plt.tight_layout()
-            plt.show()
-        else:
-            print(f"Skipping dependence plot: '{primary_interaction_feature}' not found in training dataset features.")
-            plt.show()
+    def verify_winners_loop(self) -> pd.DataFrame:
+        """Delegate winner verification to the forecast evaluator."""
+        if self.evaluator is None:
+            raise RuntimeError(
+                "The model must be trained before verifying winners."
+            )
+        return self.evaluator.verify_winners_loop()
 
-    def verify_winners_loop(self):
-        """Winner Verification Loop for Norfolk CC."""
-        if self.future_data is None or self.future_data.empty:
-            print("No prediction data found for winner verification.")
-            return
-
-        print("\n====================================================")
-        print("WINNER VERIFICATION METRIC MATRIX (NORFOLK 2026)")
-        print("====================================================")
-        
-        norfolk_future = self.future_data[self.future_data['cc_code'] == self.cc_code]
-        if norfolk_future.empty:
-            norfolk_future = self.future_data 
-
-        idx_winners = norfolk_future.groupby('wd_code')['final_forecast_share'].idxmax()
-        winners_df = norfolk_future.loc[idx_winners]
-        
-        seat_counts = winners_df['party_label'].value_counts()
-        total_seats = seat_counts.sum()
-        
-        print(f"Total Unique Divisions/Wards Calculated: {total_seats}")
-        print("-" * 52)
-        print(f"{'Party Name':<30} | {'Seats Won':>10}")
-        print("-" * 52)
-        for party, seats in seat_counts.items():
-            print(f"{party:<30} | {seats:>10}")
-        print("====================================================\n")
-
-    @property
-    def forecast(self):
-        """GUI Data Contract Compatibility Layer."""
+    def forecast(self) -> pd.DataFrame:
+        """Return forecast rows with human-readable ward names."""
         if self.future_data is None:
             return pd.DataFrame()
         forecast_df = self.future_data.copy()
@@ -553,7 +416,7 @@ class Forecaster(iMachineLearningInterface):
         if self.future_data is None or self.future_data.empty:
             raise RuntimeError("No forecast data available. Run train_and_evaluate() first.")
 
-        forecast_df = self.forecast.copy()
+        forecast_df = self.forecast().copy()
         destination = Path(output_path)
         if not destination.is_absolute():
             destination = Path(__file__).parent / destination
@@ -561,6 +424,192 @@ class Forecaster(iMachineLearningInterface):
         forecast_df.to_csv(destination, index=False)
         print(f"Saved forecast results to: {destination}")
         return destination
+
+class FeatureEngineer():
+    def __init__(self, df_raw: pd.DataFrame):
+        self.df_raw = df_raw.copy()
+
+    def map_ideology(self, party_name):
+        """Maps categorical party text to a continuous scale (-1.0 Left to +1.0 Right)."""
+        mapping = {
+            'Conservative': 0.6,
+            'Reform UK': 0.75,
+            'Labour': -0.36,
+            'Green Party': -0.55,
+            'Liberal Democrats': -0.23,
+            'Communist Party of Britain': -1.0,
+            'Independent': 0.0,
+            'Restore Britain': 1.0,
+        }
+        return mapping.get(party_name, 0.0)
+
+    def engineer_features(self) -> None:
+        """Shared pandas preprocessing used by both extract_and_prepare_data() and prepare_data()."""
+        print("Processing localized historical party baseline frameworks...")
+        historical_averages = (
+            self.df_raw[self.df_raw['election_year'] < 2026] # pyright: ignore[reportOptionalSubscript]
+            .groupby(['wd_code', 'party_name'], group_keys=False)['party_vote_share']
+            .mean().reset_index().rename(columns={'party_vote_share': 'historical_party_ward_mean'})
+        )
+        self.df_raw = pd.merge(self.df_raw, historical_averages, on=['wd_code', 'party_name'], how='left')  # pyright: ignore[reportArgumentType]
+        self.df_raw['historical_party_ward_mean'] = self.df_raw['historical_party_ward_mean'].fillna(15.0)
+
+        self.df_raw['candidate_personal_historical_mean'] = self.df_raw['party_vote_share']
+
+        print("Generating tactical voting features downstream via vector loops...")
+        
+        # 1. Ideological continuous index map (-1.0 to 1.0)
+        self.df_raw['left_right'] = self.df_raw['party_name'].apply(self.map_ideology)
+        
+        # 2. Chronological sort for rank calculation and shift execution
+        self.df_raw = self.df_raw.sort_values(by=['wd_code', 'party_name', 'election_year'])
+        
+        # 3. Dynamic row-level ranking function within cycles
+        self.df_raw['current_ward_rank'] = self.df_raw.groupby(['wd_code', 'election_year'], group_keys=False)['party_vote_share'].rank(ascending=False, method='min')
+        
+        # 4. Generate prior-cycle shifted attributes
+        self.df_raw['prior_vote_share'] = self.df_raw.groupby(['wd_code', 'party_name'], group_keys=False)['party_vote_share'].shift(1)
+        self.df_raw['prior_ward_rank'] = self.df_raw.groupby(['wd_code', 'party_name'], group_keys=False)['current_ward_rank'].shift(1)
+        
+        # 5. Define target shift variable (y = Δ change in vote share)
+        self.df_raw['diff_vote_share'] = self.df_raw['party_vote_share'] - self.df_raw['prior_vote_share']
+        
+        # 6. Binary flag mapping for tactical wasted vote compression
+        self.df_raw['wasted_vote'] = np.where(
+            (self.df_raw['prior_ward_rank'] >= 3) & (self.df_raw['prior_vote_share'] < 15.0), 1, 0
+        )
+        
+        # 7. Multi-candidate top_2 margin execution
+        ward_groups = []
+        for wd_code, group in self.df_raw.groupby('wd_code', sort=False):
+            processed_group = self.calculate_prior_top2_margin(group)
+            processed_group = processed_group.copy()
+            processed_group['wd_code'] = wd_code
+            ward_groups.append(processed_group)
+        self.df_raw = pd.concat(ward_groups, ignore_index=True)
+        
+        # Complete missing initial metrics by mapping broad local footprints
+        self.df_raw['top_2'] = self.df_raw['top_2'].fillna(15.0)
+
+    def calculate_prior_top2_margin(self, group):
+        """Calculates the distance between 1st and 2nd place in the previous cycle."""
+        group = group.sort_values(by=['election_year', 'party_vote_share'], ascending=[True, False])
+        unique_years = sorted(group['election_year'].unique())
+        margin_mapping = {}
+        
+        for i, year in enumerate(unique_years):
+            if i == 0:
+                margin_mapping[year] = np.nan
+                continue
+            prior_year = unique_years[i - 1]
+            prior_data = group[group['election_year'] == prior_year]
+            if len(prior_data) >= 2:
+                shares = prior_data['party_vote_share'].values
+                margin_mapping[year] = shares[0] - shares[1]
+            else:
+                margin_mapping[year] = np.nan
+                
+        group['top_2'] = group['election_year'].map(margin_mapping)
+        return group
+
+class ModelEvaluator:
+    def __init__(self, data, cc_code=None):
+        self.future_data = data
+        self.cc_code = cc_code
+
+    def verify_winners_loop(self) -> pd.DataFrame:
+        if self.future_data is None or self.future_data.empty:
+            return pd.DataFrame(columns=["party", "seats_won"])
+
+        evaluated_data = self.future_data
+
+        if self.cc_code:
+            filtered_data = evaluated_data[
+                evaluated_data["cc_code"] == self.cc_code
+            ]
+            if not filtered_data.empty:
+                evaluated_data = filtered_data
+
+        winner_indexes = evaluated_data.groupby("wd_code")[
+            "final_forecast_share"
+        ].idxmax()
+
+        winners = evaluated_data.loc[winner_indexes]
+        seat_counts = (
+            winners["party_label"]
+            .value_counts()
+            .rename_axis("party")
+            .reset_index(name="seats_won")
+        )
+
+        return seat_counts
+
+class ExplainabilityEngine:
+    def __init__(self, primary_interaction_feature: str = "top_2"):
+        self.primary_interaction_feature = primary_interaction_feature
+        self.explainer = None
+        self.shap_values = None
+
+    def generate_shap_analysis(
+        self,
+        model,
+        training_features: pd.DataFrame,
+        primary_interaction_feature: str | None = None,
+    ) -> None:
+        """Calculate TreeSHAP values and display the diagnostic plots."""
+        interaction_feature = primary_interaction_feature or self.primary_interaction_feature
+        print("\nComputing SHAP values via Path-Dependent TreeExplainer Model...")
+
+        self.explainer = shap.TreeExplainer(
+            model,
+            feature_perturbation="tree_path_dependent"
+        )
+        raw_shap_values = self.explainer.shap_values(training_features)
+
+        self.shap_values = shap.Explanation(
+            values=raw_shap_values,
+            base_values=self.explainer.expected_value,
+            data=training_features.values,
+            feature_names=training_features.columns,# # type: ignore
+        )
+
+        shap.plots.bar(self.shap_values, show=False)
+        plt.title("SHAP Global Feature Importance\n(Mean Absolute Impact on Δ Vote Share)", fontsize=12, pad=15)
+        fig1 = plt.gcf()
+        fig1.set_size_inches(10, 5)
+        plt.tight_layout()
+
+        if interaction_feature in training_features.columns:
+            shap.plots.scatter(
+                self.shap_values[:, interaction_feature],
+                color=self.shap_values,
+                show=False,
+            )
+            plt.title(
+                f"Δ Target Dependence Scatter: '{interaction_feature}' Feature Scaling & Interaction",
+                fontsize=12,
+                pad=15,
+            )
+            plt.ylabel(f"SHAP Value for {interaction_feature} (Δ Vote Share Impact)")
+            plt.grid(True, alpha=0.25)
+
+            fig2 = plt.gcf()
+            fig2.set_size_inches(10, 6)
+            plt.tight_layout()
+        else:
+            print(
+                f"Skipping dependence plot: '{interaction_feature}' not found in training dataset features."
+            )
+        plt.show()
+
+
+#==============================================================================
+# Model 2: September 2026
+#==============================================================================
+class Forecast_2(iMachineLearningInterface):
+
+
+    pass
 
 class Forecast_Repository:
     """Owns the database connection and forecast I/O; independent of any Forecaster instance."""
@@ -580,7 +629,7 @@ class Forecast_Repository:
 
     def get_forecast_dataframe(self, forecaster: Forecaster):
         """Returns the full forecast DataFrame with ward names included."""
-        return forecaster.forecast
+        return forecaster.forecast()
 
     def save_forecast_to_csv(self, forecaster: Forecaster, output_path: str = "election_forecast_results.csv") -> Path:
         """Saves the forecast DataFrame to a CSV file."""
@@ -606,8 +655,8 @@ class ForecastService:
         """Loads inputs from the repository, then prepares/trains/predicts via the forecaster."""
         raw_data, ward_name_map = self.repository.load_election_data()
         self.forecaster.prepare_data(raw_data, ward_name_map)
-        self.forecaster.train_model()
-        return self.forecaster.predict()
+        self.forecaster.train_and_evaluate()
+        return self.forecaster.forecast()
 
 
 

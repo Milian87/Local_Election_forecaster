@@ -8,11 +8,11 @@
 
 import sys
 from pathlib import Path
+import pandas as pd
 from PySide6 import QtCore, QtGui
 import PySide6.QtWidgets as QtWidgets
 from Controllers import DashboardController
 from Data import SampleData
-from forecaster_data import DataManager, MySQLDatabase
 from widgets import (
     ButtonWidget,
     active_blue_button_style,
@@ -179,8 +179,6 @@ class DashboardScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):
         super().__init__(parent)
         self.controller = controller or DashboardController(SampleData())
-        self.database = MySQLDatabase(connection_string=None)
-        self.data_manager = DataManager(self.database)
         layout = QtWidgets.QVBoxLayout(self)
 
 
@@ -207,7 +205,7 @@ class DashboardScreen(BaseScreen):
         self.level_combo_box.addItems(["District", "County & Unitary"])
         self.left_layout.addWidget(self.level_combo_box)
         self.summary_table = TransparentTableWidget(
-            ["Council", "Current Party", " Forecast Party", "Seats"]
+            ["Council / Ward", "Forecast Party", "Seats / Share"]
         )
         self.left_layout.addWidget(self.summary_table)
 
@@ -217,8 +215,6 @@ class DashboardScreen(BaseScreen):
         self.left_layout.addWidget(self.vote_share_table)
 
         self.populate_tables()
-
-        self.forecast_data = self.collect_forecast_data()
 
         boundary_path = Path(__file__).parent / "ward_boundaries.geojson"
         try:
@@ -235,10 +231,13 @@ class DashboardScreen(BaseScreen):
             self.right_layout.addWidget(self.map_view)
 
     def populate_tables(self):
-        forecast_data = self.controller.get_forecast_data()
+        forecast_data: pd.DataFrame = self.controller.get_forecast_data()
         self.summary_table.setRowCount(len(forecast_data))
         for row_index, (_, row) in enumerate(forecast_data.iterrows()):
-            values = [row["council"], row["party"], str(row["seats"])]
+            council_or_ward = row.get("council", row.get("ward_name", row.get("ward", "")))
+            party = row.get("party_label", row.get("party", ""))
+            seats_or_share = row.get("seats", row.get("final_forecast_share", ""))
+            values = [str(council_or_ward), str(party), str(seats_or_share)]
             for column_index, value in enumerate(values):
                 self.summary_table.setItem(
                     row_index,
@@ -262,17 +261,6 @@ class DashboardScreen(BaseScreen):
                     column_index,
                     QtWidgets.QTableWidgetItem(value),
                 )
-
-    def collect_forecast_data(self):
-        self.database.connect()
-        try:
-            forecast_data = self.data_manager.load_training_data(
-                poll_column="national_poll_party_share"
-            )
-            print(forecast_data)
-            return forecast_data
-        finally:
-            self.database.disconnect()
 
 class ForecastScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):

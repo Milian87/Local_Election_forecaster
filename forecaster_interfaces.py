@@ -36,15 +36,11 @@ class iMachineLearningInterface(ABC):
         pass
 
     @abstractmethod
-    def train_model(self) -> None:
+    def train_and_evaluate(self) -> None:
         pass
 
     @abstractmethod
-    def evaluate_model(self) -> dict[str, float]:
-        pass
-
-    @abstractmethod
-    def predict(self) -> pd.DataFrame:
+    def forecast(self) -> pd.DataFrame:
         pass
 
 class iDatabaseInterface(ABC):
