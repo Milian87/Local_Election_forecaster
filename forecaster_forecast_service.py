@@ -99,7 +99,7 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
 #==============================================================================
 # Model 1: May - August 2026 Local Election Forecast dissertation
 #==============================================================================
-class Forecaster(iMachineLearningInterface):
+class Forecaster_1(iMachineLearningInterface):
     """
     Advanced predictive engine that transforms targets to change-in-share (Δ)
     and engineers tactical metrics (top_2 margins, wasted_vote flags, left_right indexes)
@@ -600,29 +600,29 @@ class Forecast_Repository:
         """Queries election, candidate, ward, and census tables used to prepare forecast inputs."""
         return _query_election_data(self.engine, self.db_config)
 
-    def get_forecast_summary(self, forecaster: Forecaster, cc_code=None):
+    def get_forecast_summary(self, forecaster: Forecaster_1, cc_code=None):
         """Returns a summary DataFrame of forecasted vs. current seats by party."""
         return forecaster.get_summary(cc_code=cc_code)
 
-    def get_forecast_dataframe(self, forecaster: Forecaster):
+    def get_forecast_dataframe(self, forecaster: Forecaster_1):
         """Returns the full forecast DataFrame with ward names included."""
         return forecaster.forecast()
 
-    def save_forecast_to_csv(self, forecaster: Forecaster, output_path: str = "election_forecast_results.csv") -> Path:
+    def save_forecast_to_csv(self, forecaster: Forecaster_1, output_path: str = "election_forecast_results.csv") -> Path:
         """Saves the forecast DataFrame to a CSV file."""
         return forecaster.save_forecast_to_csv(output_path=output_path)
 
-    def get_ward_shap_explanation(self, forecaster: Forecaster, ward_name_input, feature_to_plot):
+    def get_ward_shap_explanation(self, forecaster: Forecaster_1, ward_name_input, feature_to_plot):
         """Returns a GeoDataFrame with SHAP values for a specific ward and feature."""
         return get_ward_shap_explanation(ward_name_input, forecaster, self.map_orchestrator, feature_to_plot)
 
-    def interactive_forecast_lookup(self, forecaster: Forecaster):
+    def interactive_forecast_lookup(self, forecaster: Forecaster_1):
         """Starts an interactive CLI loop for ward code or name lookup."""
         interactive_forecast_lookup(forecaster)
 
 class ForecastService:
     """Coordinator: pulls data from the repository and drives the forecaster's ML lifecycle."""
-    def __init__(self, forecaster: Forecaster, repository: Forecast_Repository):
+    def __init__(self, forecaster: Forecaster_1, repository: Forecast_Repository):
         self.forecaster = forecaster
         self.repository = repository
         self.map_orchestrator = repository.map_orchestrator
