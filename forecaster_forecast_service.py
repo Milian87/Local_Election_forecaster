@@ -591,11 +591,9 @@ class ExplainabilityEngine:
                 f"Skipping dependence plot: '{interaction_feature}' not found in training dataset features."
             )
         plt.show()
-
 #==============================================================================
 # Forecast Repository and Service Classes
 #==============================================================================
-
 class Forecast_Repository:
     """Owns the database connection and forecast I/O; independent of any Forecaster instance."""
     def __init__(self, db_config=None):
@@ -628,7 +626,6 @@ class Forecast_Repository:
         """Starts an interactive CLI loop for ward code or name lookup."""
         interactive_forecast_lookup(forecaster)
 
-
 class ForecastService:
     """Coordinator: pulls data from the repository and drives the forecaster's ML lifecycle."""
     def __init__(self, forecaster: Forecaster, repository: Forecast_Repository):
@@ -642,13 +639,6 @@ class ForecastService:
         self.forecaster.prepare_data(raw_data, ward_name_map)
         self.forecaster.train_and_evaluate()
         return self.forecaster.forecast()
-
-
-
-
-
-
-
 
 # Dynamic Map Engine Imports
 import geopandas as gpd
