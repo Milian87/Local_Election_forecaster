@@ -153,8 +153,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if getattr(self, "_temp_forecast_ran", False):  # TEMP: only run once per app session
             return
         self._temp_forecast_ran = True  # TEMP: guard flag for the one-shot run above
-        from forecaster_forecast_service import Forecaster, Forecast_Repository, ForecastService  # TEMP: temporary import
-        forecaster = Forecaster(use_xgboost=False)  # TEMP: fast Random Forest path for a quick confirmation run
+        from forecaster_forecast_service import Forecaster_1, Forecast_Repository, ForecastService  # TEMP: temporary import
+        forecaster = Forecaster_1(use_xgboost=False)  # TEMP: fast Random Forest path for a quick confirmation run
         repository = Forecast_Repository()  # TEMP: repository owns its own DB connection
         service = ForecastService(forecaster, repository)  # TEMP: coordinator wiring repository + forecaster
         try:
