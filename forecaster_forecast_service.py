@@ -342,6 +342,32 @@ class Forecaster_1(iMachineLearningInterface):
         self.feature_engineer.engineer_features()
         self.df_raw = self.feature_engineer.df_raw
 
+    def _time_based_holdout_split(self, historical_data: pd.DataFrame, columns_to_drop: list[str], test_size: float = 0.5, random_state: int = 42):
+        """Hold out the most recent election year instead of a random sample, so results from
+        that year cannot leak into earlier training rows; the held-out year is then randomly
+        split into validation/test since no further time ordering exists within it."""
+        feature_columns = [col for col in columns_to_drop if col in historical_data.columns]
+        years = sorted(historical_data['election_year'].dropna().unique())
+
+        if len(years) < 2:
+            X = historical_data.drop(columns=feature_columns).astype(float)
+            y = historical_data['diff_vote_share']
+            return train_test_split(X, y, test_size=0.2, random_state=random_state)
+
+        most_recent_year = years[-1]
+        train_rows = historical_data[historical_data['election_year'] < most_recent_year]
+        holdout_rows = historical_data[historical_data['election_year'] == most_recent_year]
+
+        X_tr = train_rows.drop(columns=feature_columns).astype(float)
+        y_tr = train_rows['diff_vote_share']
+        X_holdout = holdout_rows.drop(columns=feature_columns).astype(float)
+        y_holdout = holdout_rows['diff_vote_share']
+
+        X_val, X_te, y_val, y_te = train_test_split(X_holdout, y_holdout, test_size=test_size, random_state=random_state)
+        X_tr = pd.concat([X_tr, X_val])
+        y_tr = pd.concat([y_tr, y_val])
+        return X_tr, X_te, y_tr, y_te
+
     def train_and_evaluate(self):
         """Executes delta-target training and registers verification metrics."""
         if 'wd_code' not in self.df_raw.columns: # type: ignore
@@ -376,8 +402,8 @@ class Forecaster_1(iMachineLearningInterface):
         # Preserve exact training feature names matrix for SHAP
         self.X_train_features = X_train
 
-        # 80/20 Train-Test Partition
-        X_tr, X_te, y_tr, y_te = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
+        # Split by election year (not randomly) so the most recent year cannot leak into training.
+        X_tr, X_te, y_tr, y_te = self._time_based_holdout_split(historical_data, columns_to_drop)
         
         # 1. Train Linear Baseline (Control Group for H1)
         linear_model = LinearRegression()
