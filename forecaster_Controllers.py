@@ -26,6 +26,13 @@ class DashboardController:
     def get_council_summaries(self) -> pd.DataFrame:
         return self.data_source.get_council_summaries()
 
+    def get_county_and_unitary_forecast(self) -> pd.DataFrame:
+        if hasattr(self.data_source, "county_and_unitary_forecast"):
+            return self.data_source.county_and_unitary_forecast()
+        forecast_data = _get_forecast_data(self.data_source)
+        authority_mask = forecast_data["cc_code"].astype(str).str.startswith(("E06", "E10"), na=False)
+        return forecast_data[authority_mask].copy()
+
     def verify_winners(self):
         return self.data_source.verify_winners_loop()
     

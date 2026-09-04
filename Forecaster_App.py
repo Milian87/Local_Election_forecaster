@@ -23,7 +23,7 @@ class ForecastWorker(QtCore.QObject):
     def run(self) -> None:
         try:
             forecaster = Forecaster_1(use_xgboost=False)
-            ForecastService(forecaster, Forecast_Repository()).run_forecast()
+            ForecastService(forecaster, Forecast_Repository(load_map=False)).run_forecast()
             self.completed.emit(forecaster)
         except Exception as error:
             self.failed.emit(str(error))
@@ -55,9 +55,7 @@ class ForecastApp:
         self.forecast_worker = ForecastWorker()
         self.forecast_worker.moveToThread(self.forecast_thread)
         self.forecast_thread.started.connect(self.forecast_worker.run)
-        self.forecast_worker.completed.connect(
-            lambda forecaster: dashboard.set_controller(DashboardController(forecaster))
-        )
+        self.forecast_worker.completed.connect(dashboard.set_forecaster)
         self.forecast_worker.failed.connect(self._show_forecast_error)
         self.forecast_worker.finished.connect(self.forecast_thread.quit)
         self.forecast_worker.finished.connect(self.forecast_worker.deleteLater)

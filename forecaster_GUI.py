@@ -193,19 +193,8 @@ class DashboardScreen(BaseScreen):
 
         self.populate_tables()
 
-        boundary_path = Path(__file__).parent / "ward_boundaries.geojson"
-        try:
-            self.map_orchestrator = map_orchestrator.CouncilMapOrchestrator(
-                str(boundary_path)
-            )
-            self.map_view = self.map_orchestrator.generate(
-                self.controller.get_forecast_data()
-            )
-            self.right_layout.addWidget(self.map_view)
-        except (OSError, ValueError, ImportError) as error:
-            self.map_view = QtWidgets.QLabel(f"Map unavailable: {error}")
-            self.map_view.setWordWrap(True)
-            self.right_layout.addWidget(self.map_view)
+        self.map_view = None
+        self.refresh_map()
 
     def populate_tables(self):
         summary = self.controller.get_summary()
@@ -239,6 +228,32 @@ class DashboardScreen(BaseScreen):
     def set_controller(self, controller) -> None:
         self.controller = controller
         self.populate_tables()
+        self.refresh_map()
+
+    @QtCore.Slot(object)
+    def set_forecaster(self, forecaster) -> None:
+        self.set_controller(DashboardController(forecaster))
+
+    def refresh_map(self) -> None:
+        if self.map_view is not None:
+            self.right_layout.removeWidget(self.map_view)
+            self.map_view.deleteLater()
+
+        boundary_path = (
+            Path(__file__).parent
+            / "data"
+            / "County Electoral Division (May 2025) Boundaries EN BFE"
+            / "CED_MAY_2025_EN_BFC.shp"
+        )
+        try:
+            self.map_orchestrator = map_orchestrator.CouncilMapOrchestrator(str(boundary_path))
+            self.map_view = self.map_orchestrator.generate(
+                self.controller.get_county_and_unitary_forecast()
+            )
+        except (OSError, ValueError, ImportError) as error:
+            self.map_view = QtWidgets.QLabel(f"Map unavailable: {error}")
+            self.map_view.setWordWrap(True)
+        self.right_layout.addWidget(self.map_view)
 
 class ForecastScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):

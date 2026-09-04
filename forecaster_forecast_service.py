@@ -193,7 +193,7 @@ class Forecaster_1(iMachineLearningInterface):
         candidate_drops = [
             'party_vote_share', 'prior_vote_share', 'current_ward_rank', 'prior_ward_rank',
             'diff_vote_share', 'election_year', 'wd_code', 'cc_code', 'party_label', 
-            'candidate_id', 'candidate_name'
+            'candidate_id', 'candidate_name', 'council_name'
         ]
         columns_to_drop = [col for col in candidate_drops if col in historical_data.columns]
         
@@ -285,12 +285,18 @@ class Forecaster_1(iMachineLearningInterface):
         if self.future_data is None or self.future_data.empty:
             return pd.DataFrame(columns=["council", "party", "seats_gained"])
 
+        authority_data = self.future_data[
+            self.future_data["cc_code"].astype(str).str.startswith(("E06", "E10"), na=False)
+        ].copy()
+        if authority_data.empty:
+            return pd.DataFrame(columns=["council", "party", "seats_gained"])
+
         grouping_columns = ["cc_code", "wd_code"]
-        forecast_winners = self.future_data.loc[
-            self.future_data.groupby(grouping_columns)["final_forecast_share"].idxmax()
+        forecast_winners = authority_data.loc[
+            authority_data.groupby(grouping_columns)["final_forecast_share"].idxmax()
         ]
-        current_winners = self.future_data.loc[
-            self.future_data.groupby(grouping_columns)["party_vote_share"].idxmax()
+        current_winners = authority_data.loc[
+            authority_data.groupby(grouping_columns)["party_vote_share"].idxmax()
         ]
 
         forecast_seats = forecast_winners.groupby(["cc_code", "party_label"]).size().rename("seats_forecast")
@@ -302,9 +308,9 @@ class Forecaster_1(iMachineLearningInterface):
         largest_gains = party_totals.loc[
             party_totals.groupby("cc_code")["seats_gained"].idxmax()
         ].copy()
-        if "council_name" in self.future_data.columns:
+        if "council_name" in authority_data.columns:
             council_names = (
-                self.future_data[["cc_code", "council_name"]]
+            authority_data[["cc_code", "council_name"]]
                 .dropna(subset=["council_name"])
                 .drop_duplicates("cc_code")
             )
@@ -316,6 +322,12 @@ class Forecaster_1(iMachineLearningInterface):
         return largest_gains[["council", "party_label", "seats_gained"]].rename(
             columns={"party_label": "party"}
         ).sort_values("council").reset_index(drop=True)
+
+    def county_and_unitary_forecast(self) -> pd.DataFrame:
+        """Return forecast rows for English county and unitary authorities only."""
+        forecast_data = self.forecast()
+        authority_mask = forecast_data["cc_code"].astype(str).str.startswith(("E06", "E10"), na=False)
+        return forecast_data[authority_mask].copy()
 
     def extract_and_prepare_data(self):
         """Standalone/legacy path: queries the database directly, then engineers features."""
@@ -354,7 +366,7 @@ class Forecaster_1(iMachineLearningInterface):
         columns_to_drop = [
             'party_vote_share', 'prior_vote_share', 'current_ward_rank', 'prior_ward_rank',
             'diff_vote_share', 'election_year', 'wd_code', 'cc_code', 'party_label', 
-            'candidate_id', 'candidate_name'
+            'candidate_id', 'candidate_name', 'council_name'
         ]
         
         X_train = historical_data.drop(columns=[col for col in columns_to_drop if col in historical_data.columns]).astype(float)
@@ -628,11 +640,14 @@ class ExplainabilityEngine:
 #==============================================================================
 class Forecast_Repository:
     """Owns the database connection and forecast I/O; independent of any Forecaster instance."""
-    def __init__(self, db_config=None):
+    def __init__(self, db_config=None, load_map=True):
         self.database = MySQLDatabase(db_config)
         self.engine = self.database.engine
         self.db_config = self.database.db_config
-        self.map_orchestrator = MapOrchestrator(_resolve_division_boundary_path(Path(__file__).parent)) # type: ignore
+        self.map_orchestrator = (
+            MapOrchestrator(str(_resolve_division_boundary_path(Path(__file__).parent)))
+            if load_map else None
+        )
 
     def load_election_data(self) -> tuple[pd.DataFrame, dict[str, str]]:
         """Queries election, candidate, ward, and census tables used to prepare forecast inputs."""
