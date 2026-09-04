@@ -14,13 +14,8 @@ from forecaster_Controllers import DashboardController
 from Data import SampleData
 from forecaster_GUI import DataScreen
 from forecaster_data import MySQLDatabase
-from widgets import (
-    ButtonWidget,
-    active_blue_button_style,
-    blue_button_style,
-    red_button_style,
-)
-from widgets import TransparentTableWidget
+from forecaster_Controllers import DashboardController
+from forecaster_forecast_service import (Forecaster_1, Forecast_Repository, ForecastService)
 from forecaster_GUI import DashboardScreen, ForecastScreen, AnalysisScreen, MainWindow
 
 class ForecastApp:
@@ -31,10 +26,21 @@ class ForecastApp:
 
     def run(self):
         self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+
+        forecaster = Forecaster_1(use_xgboost=False)
+        repository = Forecast_Repository()
+        forecast_service = ForecastService(forecaster, repository)
+
+        forecast_service.run_forecast()
+
+        dashboard_controller = DashboardController(forecaster)
         screen_widgets = {
-            name: screen() if isinstance(screen, type) else screen
-            for name, screen in self.screens.items()
+            "Dashboard": DashboardScreen(controller=dashboard_controller),
+            "Forecast": ForecastScreen(controller=dashboard_controller),
+            "Analysis": AnalysisScreen(),
+            "Data": DataScreen(),
         }
+
         self.main_window = MainWindow(screen_widgets)
         self.main_window.showMaximized()
         return self.app.exec()
