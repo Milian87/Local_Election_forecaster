@@ -154,17 +154,53 @@ class BaseMapOrchestrator:
 class CouncilMapOrchestrator(BaseMapOrchestrator):
     def generate(self, forecast_df):
         gdf = self.load_geodata()
+        division_code_column = next(
+            (column for column in ("CED25CD", "CED26CD") if column in gdf.columns),
+            None,
+        )
+        if division_code_column and not any(
+            column in gdf.columns for column in ("CTY25NM", "LAD25NM", "CTY26NM", "LAD26NM")
+        ):
+            lookup_path = (
+                Path(__file__).parent
+                / "data"
+                / "csv"
+                / "Ward_to_LAD_to_County_to_County_Electoral_Division_(May_2025)_Lookup_for_England.csv"
+            )
+            if lookup_path.is_file():
+                lookup = pd.read_csv(
+                    lookup_path,
+                    usecols=["CED25CD", "CTY25CD", "CTY25NM", "LAD25CD", "LAD25NM"],
+                ).drop_duplicates("CED25CD")
+                gdf = gdf.merge(
+                    lookup,
+                    left_on=division_code_column,
+                    right_on="CED25CD",
+                    how="left",
+                    suffixes=("", "_lookup"),
+                )
         gdf = self._attach_forecast_winners(
             gdf,
             forecast_df,
             ("WD25CD", "WD25NM", "CED25CD", "CED25NM"),
         )
-        council_column = next(
-            (column for column in ("LAD25CD", "LAD25NM", "CTY25CD", "CTY25NM") if column in gdf.columns),
+        county_name_column = next(
+            (column for column in ("CTY25NM", "CTY26NM") if column in gdf.columns),
             None,
         )
-        if council_column is None:
+        unitary_name_column = next(
+            (column for column in ("LAD25NM", "LAD26NM") if column in gdf.columns),
+            None,
+        )
+        if county_name_column is None and unitary_name_column is None:
             raise ValueError("Council map data needs a LAD25CD, LAD25NM, CTY25CD, or CTY25NM column")
+
+        gdf["__council_name"] = (
+            gdf[county_name_column].replace("", pd.NA).fillna(gdf[unitary_name_column])
+            if county_name_column and unitary_name_column
+            else gdf[county_name_column or unitary_name_column]
+        )
+        council_column = "__council_name"
 
         winner_by_council = gdf.groupby(council_column)["winner"].agg(
             lambda values: values[values != "Default"].mode().iat[0]
