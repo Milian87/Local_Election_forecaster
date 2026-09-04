@@ -56,7 +56,7 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
 
     query = """
         SELECT 
-            er.wd_code, ew.cc_code AS cc_code, cand.registered_party AS party_name, cand.candidate_name,
+            er.wd_code, ew.cc_code AS cc_code, cc.council_name, cand.registered_party AS party_name, cand.candidate_name,
             er.election_year, er.candidate_id, AVG(er.vote_share) AS party_vote_share, 
             MAX(er.is_incumbent_cllr) AS has_incumbent_boost,
             AVG(er.{poll_col}) AS national_poll_share,
@@ -69,10 +69,11 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
         FROM election_results er
         JOIN candidates cand ON er.candidate_id = cand.candidate_id
         LEFT JOIN electoral_wards ew ON er.wd_code = ew.wd_code
+        LEFT JOIN county_codes cc ON ew.cc_code = cc.cc_code
         LEFT JOIN geographic_lookup gl ON er.wd_code = gl.wd_code
         LEFT JOIN census c ON gl.oa_code = c.oa_code
         WHERE er.is_uncontested = 0
-        GROUP BY er.wd_code, ew.cc_code, cand.registered_party, cand.candidate_name, er.election_year, er.candidate_id;
+        GROUP BY er.wd_code, ew.cc_code, cc.council_name, cand.registered_party, cand.candidate_name, er.election_year, er.candidate_id;
     """.format(poll_col=poll_col)
     df_raw = pd.read_sql(query, con=engine)
 
@@ -278,6 +279,43 @@ class Forecaster_1(iMachineLearningInterface):
             })
             
         return pd.DataFrame(summary_rows)
+
+    def get_council_summaries(self) -> pd.DataFrame:
+        """Return the party with the largest projected net seat gain for each council."""
+        if self.future_data is None or self.future_data.empty:
+            return pd.DataFrame(columns=["council", "party", "seats_gained"])
+
+        grouping_columns = ["cc_code", "wd_code"]
+        forecast_winners = self.future_data.loc[
+            self.future_data.groupby(grouping_columns)["final_forecast_share"].idxmax()
+        ]
+        current_winners = self.future_data.loc[
+            self.future_data.groupby(grouping_columns)["party_vote_share"].idxmax()
+        ]
+
+        forecast_seats = forecast_winners.groupby(["cc_code", "party_label"]).size().rename("seats_forecast")
+        current_seats = current_winners.groupby(["cc_code", "party_label"]).size().rename("seats_current")
+        party_totals = pd.concat([forecast_seats, current_seats], axis=1).fillna(0)
+        party_totals["seats_gained"] = party_totals["seats_forecast"] - party_totals["seats_current"]
+        party_totals = party_totals.reset_index()
+
+        largest_gains = party_totals.loc[
+            party_totals.groupby("cc_code")["seats_gained"].idxmax()
+        ].copy()
+        if "council_name" in self.future_data.columns:
+            council_names = (
+                self.future_data[["cc_code", "council_name"]]
+                .dropna(subset=["council_name"])
+                .drop_duplicates("cc_code")
+            )
+            largest_gains = largest_gains.merge(council_names, on="cc_code", how="left")
+        else:
+            largest_gains["council_name"] = pd.NA
+
+        largest_gains["council"] = largest_gains["council_name"].fillna(largest_gains["cc_code"])
+        return largest_gains[["council", "party_label", "seats_gained"]].rename(
+            columns={"party_label": "party"}
+        ).sort_values("council").reset_index(drop=True)
 
     def extract_and_prepare_data(self):
         """Standalone/legacy path: queries the database directly, then engineers features."""

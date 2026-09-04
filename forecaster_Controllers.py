@@ -23,6 +23,9 @@ class DashboardController:
     def get_forecast_data(self) -> pd.DataFrame:
         return _get_forecast_data(self.data_source)
 
+    def get_council_summaries(self) -> pd.DataFrame:
+        return self.data_source.get_council_summaries()
+
     def verify_winners(self):
         return self.data_source.verify_winners_loop()
     

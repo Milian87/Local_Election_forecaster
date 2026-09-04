@@ -146,29 +146,6 @@ class MainWindow(QtWidgets.QMainWindow):
         for name, button in self.buttons.items():
             button.set_style(active_blue_button_style if name == screen_name else blue_button_style)
 
-        if screen_name == "Forecast":  # TEMP: run the forecaster system when the Forecast nav button is pressed
-            self._run_temp_forecast_confirmation()  # TEMP: remove this call once the forecaster system is confirmed working
-
-    def _run_temp_forecast_confirmation(self):  # TEMP: temporary end-to-end confirmation hook, safe to delete
-        if getattr(self, "_temp_forecast_ran", False):  # TEMP: only run once per app session
-            return
-        self._temp_forecast_ran = True  # TEMP: guard flag for the one-shot run above
-        from forecaster_forecast_service import Forecaster_1, Forecast_Repository, ForecastService  # TEMP: temporary import
-        forecaster = Forecaster_1(use_xgboost=False)  # TEMP: fast Random Forest path for a quick confirmation run
-        repository = Forecast_Repository()  # TEMP: repository owns its own DB connection
-        service = ForecastService(forecaster, repository)  # TEMP: coordinator wiring repository + forecaster
-        try:
-            forecast_df = service.run_forecast()  # TEMP: load data -> prepare_data -> train_model -> predict
-            message = (
-                f"Forecast pipeline ran successfully: {len(forecast_df)} rows "
-                f"across {forecast_df['wd_code'].nunique()} wards."
-            )  # TEMP: confirmation message
-            print(f"[TEMP FORECAST CHECK] {message}")  # TEMP: console confirmation
-            QtWidgets.QMessageBox.information(self, "Forecast Check", message)  # TEMP: visible GUI confirmation
-        except Exception as error:  # TEMP: surface pipeline failures without crashing the GUI
-            print(f"[TEMP FORECAST CHECK] Forecast pipeline failed: {error}")  # TEMP: console failure output
-            QtWidgets.QMessageBox.critical(self, "Forecast Check Failed", str(error))  # TEMP: visible GUI failure
-
 class BaseScreen(QtWidgets.QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -205,7 +182,7 @@ class DashboardScreen(BaseScreen):
         self.level_combo_box.addItems(["District", "County & Unitary"])
         self.left_layout.addWidget(self.level_combo_box)
         self.summary_table = TransparentTableWidget(
-            ["Council / Ward", "Forecast Party", "Seats / Share"]
+            ["Council", "Largest Seat Gain", "Seats Gained"]
         )
         self.left_layout.addWidget(self.summary_table)
 
@@ -231,21 +208,18 @@ class DashboardScreen(BaseScreen):
             self.right_layout.addWidget(self.map_view)
 
     def populate_tables(self):
-        forecast_data: pd.DataFrame = self.controller.get_forecast_data()
-        self.summary_table.setRowCount(len(forecast_data))
-        for row_index, (_, row) in enumerate(forecast_data.iterrows()):
-            council_or_ward = row.get("council", row.get("ward_name", row.get("ward", "")))
-            party = row.get("party_label", row.get("party", ""))
-            seats_or_share = row.get("seats", row.get("final_forecast_share", ""))
-            values = [str(council_or_ward), str(party), str(seats_or_share)]
-            for column_index, value in enumerate(values):
-                self.summary_table.setItem(
-                    row_index,
-                    column_index,
-                    QtWidgets.QTableWidgetItem(value),
-                )
-
         summary = self.controller.get_summary()
+        council_summaries = self.controller.get_council_summaries()
+        self.summary_table.setRowCount(len(council_summaries))
+        for row_index, (_, row) in enumerate(council_summaries.iterrows()):
+            values = [
+                str(row["council"]),
+                str(row["party"]),
+                f"{int(row['seats_gained']):+d}",
+            ]
+            for column_index, value in enumerate(values):
+                self.summary_table.setItem(row_index, column_index, QtWidgets.QTableWidgetItem(value))
+
         total_seats = summary["seats_forecast"].sum()
         self.vote_share_table.setRowCount(len(summary))
         for row_index, (_, row) in enumerate(summary.iterrows()):
@@ -261,6 +235,10 @@ class DashboardScreen(BaseScreen):
                     column_index,
                     QtWidgets.QTableWidgetItem(value),
                 )
+
+    def set_controller(self, controller) -> None:
+        self.controller = controller
+        self.populate_tables()
 
 class ForecastScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):
