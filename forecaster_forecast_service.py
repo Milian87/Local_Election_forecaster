@@ -283,13 +283,13 @@ class Forecaster_1(iMachineLearningInterface):
     def get_council_summaries(self) -> pd.DataFrame:
         """Return the party with the largest projected net seat gain for each council."""
         if self.future_data is None or self.future_data.empty:
-            return pd.DataFrame(columns=["council", "current_party", "party", "seats_gained"])
+            return pd.DataFrame(columns=["council", "current_party", "forecasted_winner", "seats_gained"])
 
         authority_data = self.future_data[
             self.future_data["cc_code"].astype(str).str.startswith(("E06", "E10"), na=False)
         ].copy()
         if authority_data.empty:
-            return pd.DataFrame(columns=["council", "current_party", "party", "seats_gained"])
+            return pd.DataFrame(columns=["council", "current_party", "forecasted_winner", "seats_gained"])
 
         grouping_columns = ["cc_code", "wd_code"]
         forecast_winners = authority_data.loc[
@@ -310,14 +310,37 @@ class Forecaster_1(iMachineLearningInterface):
             .size()
             .rename("current_seats")
             .reset_index()
+            .assign(total_current_seats=lambda dataframe: dataframe.groupby("cc_code")["current_seats"].transform("sum"))
             .sort_values(["cc_code", "current_seats", "party_label"], ascending=[True, False, True])
             .drop_duplicates("cc_code")
             .rename(columns={"party_label": "current_party"})
         )
+        current_governors["current_party"] = current_governors.apply(
+            lambda row: (
+                f"{row['current_party']} (NOC)"
+                if row["current_seats"] * 2 <= row["total_current_seats"]
+                else row["current_party"]
+            ),
+            axis=1,
+        )
+
+        forecasted_winners = (
+            forecast_winners.groupby(["cc_code", "party_label"])
+            .size()
+            .rename("forecasted_seats")
+            .reset_index()
+            .sort_values(["cc_code", "forecasted_seats", "party_label"], ascending=[True, False, True])
+            .drop_duplicates("cc_code")
+            .rename(columns={"party_label": "forecasted_winner"})
+        )
 
         largest_gains = party_totals.loc[
             party_totals.groupby("cc_code")["seats_gained"].idxmax()
-        ].copy().merge(current_governors[["cc_code", "current_party"]], on="cc_code", how="left")
+        ].copy().merge(
+            current_governors[["cc_code", "current_party"]], on="cc_code", how="left"
+        ).merge(
+            forecasted_winners[["cc_code", "forecasted_winner"]], on="cc_code", how="left"
+        )
         if "council_name" in authority_data.columns:
             council_names = (
             authority_data[["cc_code", "council_name"]]
@@ -329,9 +352,9 @@ class Forecaster_1(iMachineLearningInterface):
             largest_gains["council_name"] = pd.NA
 
         largest_gains["council"] = largest_gains["council_name"].fillna(largest_gains["cc_code"])
-        return largest_gains[["council", "current_party", "party_label", "seats_gained"]].rename(
-            columns={"party_label": "party"}
-        ).sort_values("council").reset_index(drop=True)
+        return largest_gains[
+            ["council", "current_party", "forecasted_winner", "seats_gained"]
+        ].sort_values("council").reset_index(drop=True)
 
     def county_and_unitary_forecast(self) -> pd.DataFrame:
         """Return forecast rows for English county and unitary authorities only."""

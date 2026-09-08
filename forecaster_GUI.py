@@ -202,7 +202,7 @@ class DashboardScreen(BaseScreen):
         self.level_combo_box.addItems(["District", "County & Unitary"])
         self.left_layout.addWidget(self.level_combo_box)
         self.summary_table = TransparentTableWidget(
-            ["Council", "Current Governing Party", "Largest Seat Gain", "Seats Gained"]
+            ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
         )
         self.left_layout.addWidget(self.summary_table)
 
@@ -224,7 +224,7 @@ class DashboardScreen(BaseScreen):
             values = [
                 str(row["council"]),
                 str(row["current_party"]),
-                str(row["party"]),
+                str(row["forecasted_winner"]),
                 f"{int(row['seats_gained']):+d}",
             ]
             for column_index, value in enumerate(values):
