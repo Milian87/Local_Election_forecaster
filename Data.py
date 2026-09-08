@@ -37,9 +37,16 @@ class SampleData:
     def get_council_summaries(self):
         summary = self.get_summary()
         largest_gain = summary.loc[summary["seat_difference"].idxmax()]
+        current_governing_party = (
+            self.current_data.groupby("party")["seats"]
+            .sum()
+            .sort_index()
+            .idxmax()
+        )
         return pd.DataFrame(
             [{
                 "council": self.forecast["council"].iloc[0],
+                "current_party": current_governing_party,
                 "party": largest_gain["party"],
                 "seats_gained": largest_gain["seat_difference"],
             }]

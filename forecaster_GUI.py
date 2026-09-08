@@ -194,7 +194,7 @@ class DashboardScreen(BaseScreen):
         self.right_layout.addWidget(self.forecast_loading_label)
         self.right_layout.setAlignment(
             self.forecast_loading_label,
-            QtCore.Qt.AlignmentFlag.AlignCenter,
+            QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter,
         )
 
         # add a combo box for selecting level of council (district, county)
@@ -202,7 +202,7 @@ class DashboardScreen(BaseScreen):
         self.level_combo_box.addItems(["District", "County & Unitary"])
         self.left_layout.addWidget(self.level_combo_box)
         self.summary_table = TransparentTableWidget(
-            ["Council", "Largest Seat Gain", "Seats Gained"]
+            ["Council", "Current Governing Party", "Largest Seat Gain", "Seats Gained"]
         )
         self.left_layout.addWidget(self.summary_table)
 
@@ -223,6 +223,7 @@ class DashboardScreen(BaseScreen):
         for row_index, (_, row) in enumerate(council_summaries.iterrows()):
             values = [
                 str(row["council"]),
+                str(row["current_party"]),
                 str(row["party"]),
                 f"{int(row['seats_gained']):+d}",
             ]

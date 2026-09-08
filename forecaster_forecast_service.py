@@ -283,13 +283,13 @@ class Forecaster_1(iMachineLearningInterface):
     def get_council_summaries(self) -> pd.DataFrame:
         """Return the party with the largest projected net seat gain for each council."""
         if self.future_data is None or self.future_data.empty:
-            return pd.DataFrame(columns=["council", "party", "seats_gained"])
+            return pd.DataFrame(columns=["council", "current_party", "party", "seats_gained"])
 
         authority_data = self.future_data[
             self.future_data["cc_code"].astype(str).str.startswith(("E06", "E10"), na=False)
         ].copy()
         if authority_data.empty:
-            return pd.DataFrame(columns=["council", "party", "seats_gained"])
+            return pd.DataFrame(columns=["council", "current_party", "party", "seats_gained"])
 
         grouping_columns = ["cc_code", "wd_code"]
         forecast_winners = authority_data.loc[
@@ -305,9 +305,19 @@ class Forecaster_1(iMachineLearningInterface):
         party_totals["seats_gained"] = party_totals["seats_forecast"] - party_totals["seats_current"]
         party_totals = party_totals.reset_index()
 
+        current_governors = (
+            current_winners.groupby(["cc_code", "party_label"])
+            .size()
+            .rename("current_seats")
+            .reset_index()
+            .sort_values(["cc_code", "current_seats", "party_label"], ascending=[True, False, True])
+            .drop_duplicates("cc_code")
+            .rename(columns={"party_label": "current_party"})
+        )
+
         largest_gains = party_totals.loc[
             party_totals.groupby("cc_code")["seats_gained"].idxmax()
-        ].copy()
+        ].copy().merge(current_governors[["cc_code", "current_party"]], on="cc_code", how="left")
         if "council_name" in authority_data.columns:
             council_names = (
             authority_data[["cc_code", "council_name"]]
@@ -319,7 +329,7 @@ class Forecaster_1(iMachineLearningInterface):
             largest_gains["council_name"] = pd.NA
 
         largest_gains["council"] = largest_gains["council_name"].fillna(largest_gains["cc_code"])
-        return largest_gains[["council", "party_label", "seats_gained"]].rename(
+        return largest_gains[["council", "current_party", "party_label", "seats_gained"]].rename(
             columns={"party_label": "party"}
         ).sort_values("council").reset_index(drop=True)
 
