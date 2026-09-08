@@ -47,6 +47,7 @@ class ForecastApp:
 
         self.main_window = MainWindow(screen_widgets)
         self.main_window.showMaximized()
+        screen_widgets["Dashboard"].set_forecast_loading(True)
         self._start_forecast_worker(screen_widgets["Dashboard"])
         return self.app.exec()
 
@@ -63,6 +64,7 @@ class ForecastApp:
         self.forecast_thread.start()
 
     def _show_forecast_error(self, message: str) -> None:
+        self.main_window.screens["Dashboard"].set_forecast_loading(False) # type: ignore
         QtWidgets.QMessageBox.warning(
             self.main_window,
             "Forecast Unavailable",

@@ -173,9 +173,29 @@ class DashboardScreen(BaseScreen):
         # add the right layout for the map
         self.right_frame = QtWidgets.QFrame()
         self.right_frame.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
-        self.right_layout = QtWidgets.QVBoxLayout(self.right_frame)
+        self.right_layout = QtWidgets.QStackedLayout(self.right_frame)
+        self.right_layout.setStackingMode(QtWidgets.QStackedLayout.StackingMode.StackAll)
         self.right_frame.setFixedWidth(750)
         self.dashboard_layout.addWidget(self.right_frame)
+
+        self.forecast_loading_label = QtWidgets.QLabel(
+            "We are now conducting the forecast, please wait"
+        )
+        self.forecast_loading_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.forecast_loading_label.setWordWrap(True)
+        self.forecast_loading_label.setMaximumSize(340, 110)
+        self.forecast_loading_label.setMargin(12)
+        self.forecast_loading_label.setStyleSheet(
+            "background-color: rgba(255, 255, 255, 220); "
+            "border: 1px solid rgba(20, 70, 90, 150); "
+            "border-radius: 8px; color: #123; font-size: 16px; "
+            "font-weight: bold; padding: 12px;"
+        )
+        self.right_layout.addWidget(self.forecast_loading_label)
+        self.right_layout.setAlignment(
+            self.forecast_loading_label,
+            QtCore.Qt.AlignmentFlag.AlignCenter,
+        )
 
         # add a combo box for selecting level of council (district, county)
         self.level_combo_box = QtWidgets.QComboBox()
@@ -230,9 +250,15 @@ class DashboardScreen(BaseScreen):
         self.populate_tables()
         self.refresh_map()
 
+    def set_forecast_loading(self, loading: bool) -> None:
+        self.forecast_loading_label.setVisible(loading)
+        if loading:
+            self.forecast_loading_label.raise_()
+
     @QtCore.Slot(object)
     def set_forecaster(self, forecaster) -> None:
         self.set_controller(DashboardController(forecaster))
+        self.set_forecast_loading(False)
 
     def refresh_map(self) -> None:
         if self.map_view is not None:
@@ -254,6 +280,7 @@ class DashboardScreen(BaseScreen):
             self.map_view = QtWidgets.QLabel(f"Map unavailable: {error}")
             self.map_view.setWordWrap(True)
         self.right_layout.addWidget(self.map_view)
+        self.forecast_loading_label.raise_()
 
 class ForecastScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):
