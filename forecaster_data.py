@@ -57,6 +57,45 @@ class MySQLDatabase(iDatabaseInterface):
         with self.engine.begin() as connection:
             connection.execute(text(statement), parameters)
 
+class PostgreSQLDatabase(iDatabaseInterface):
+    def __init__(self, connection_string):
+        self.db_config = connection_string or {
+            'host': os.getenv('POSTGRES_HOST'),
+            'port': os.getenv('POSTGRES_PORT', '5432'),
+            'user': os.getenv('POSTGRES_USER'),
+            'password': os.getenv('POSTGRES_PASSWORD'),
+            'database': os.getenv('POSTGRES_DB')
+        }
+        self.connection_string = connection_string
+        self.connection = None
+
+        self.engine = create_engine(
+            f"postgresql+psycopg2://{self.db_config['user']}:{self.db_config['password']}@"
+            f"{self.db_config['host']}:{self.db_config['port']}/{self.db_config['database']}"
+        )
+
+    def connect(self):
+        self.connection = self.engine.connect()
+        print("Connected to PostgreSQL database.")
+
+    def disconnect(self):
+        if self.connection:
+            self.connection.close()
+            self.connection = None
+            print("Disconnected from PostgreSQL database.")
+
+    def fetch_dataframe(self, query: str) -> pd.DataFrame:
+        if self.connection:
+            return pd.read_sql(query, self.connection)
+        else:
+            raise ConnectionError("Database connection is not established.")
+
+    def execute_many(self, statement: str, parameters: list[dict]) -> None:
+        if not parameters:
+            return
+        with self.engine.begin() as connection:
+            connection.execute(text(statement), parameters)
+
 class CSVDataUploader(Data_Uploader_Interface):
     def __init__(self, data_source: str):
         self.data_source = data_source
