@@ -14,7 +14,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sqlalchemy import create_engine, text
 import shap
-from forecaster_data import MySQLDatabase, DataManager
+from forecaster_data import MySQLDatabase, DataManager, PostgreSQLDatabase
 
 # Machine Learning framework dependencies
 from sklearn.ensemble import RandomForestRegressor
@@ -32,20 +32,25 @@ except ImportError:
 
 def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str]]:
     """Shared query logic used by both Forecaster (standalone mode) and Forecast_Repository."""
+    backend = db_config.get("backend", os.getenv("DB_BACKEND", "postgresql")).lower()
+    schema_filter = "TABLE_SCHEMA = :schema_name" if backend == "mysql" else "TABLE_SCHEMA = 'public'"
+    incumbent_expression = "MAX(er.is_incumbent_cllr)" if backend == "mysql" else "MAX(er.is_incumbent_cllr::int)"
+    uncontested_filter = "er.is_uncontested = 0" if backend == "mysql" else "er.is_uncontested IS FALSE"
+
     with engine.connect() as conn:
         poll_col = conn.execute(
             text(
-                """
+                f"""
                 SELECT COLUMN_NAME
                 FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = :schema_name
+                WHERE {schema_filter}
                   AND TABLE_NAME = 'election_results'
                   AND COLUMN_NAME IN ('national_poll_party_share', 'national_poll_share')
                 ORDER BY CASE COLUMN_NAME WHEN 'national_poll_party_share' THEN 1 ELSE 2 END
                 LIMIT 1
                 """
             ),
-            {"schema_name": db_config['database']},
+            {"schema_name": db_config.get("database")},
         ).scalar()
 
     if not poll_col:
@@ -54,11 +59,11 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
             "Expected one of: national_poll_party_share, national_poll_share"
         )
 
-    query = """
+    query = f"""
         SELECT 
             er.wd_code, ew.cc_code AS cc_code, cc.council_name, cand.registered_party AS party_name, cand.candidate_name,
             er.election_year, er.candidate_id, AVG(er.vote_share) AS party_vote_share, 
-            MAX(er.is_incumbent_cllr) AS has_incumbent_boost,
+            {incumbent_expression} AS has_incumbent_boost,
             AVG(er.{poll_col}) AS national_poll_share,
             (SUM(c.oa_pop) / SUM(c.oa_pop / NULLIF(c.pop_den, 0))) AS ward_population_density,
             AVG(c.pct_student) AS pct_student, AVG(c.pct_own_hme) AS pct_own_hme, AVG(c.pct_rent) AS pct_rent, 
@@ -72,9 +77,9 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
         LEFT JOIN county_codes cc ON ew.cc_code = cc.cc_code
         LEFT JOIN geographic_lookup gl ON er.wd_code = gl.wd_code
         LEFT JOIN census c ON gl.oa_code = c.oa_code
-        WHERE er.is_uncontested = 0
+        WHERE {uncontested_filter}
         GROUP BY er.wd_code, ew.cc_code, cc.council_name, cand.registered_party, cand.candidate_name, er.election_year, er.candidate_id;
-    """.format(poll_col=poll_col)
+        """
     df_raw = pd.read_sql(query, con=engine)
 
     try:
@@ -107,7 +112,9 @@ class Forecaster_1(iMachineLearningInterface):
     to model volatile electoral surge mechanics and voter coordination.
     """
     def __init__(self, db_config=None, use_xgboost=True):
-        self.database = MySQLDatabase(db_config)
+        backend = (db_config or {}).get("backend", os.getenv("DB_BACKEND", "postgresql")).lower()
+        database_class = MySQLDatabase if backend == "mysql" else PostgreSQLDatabase
+        self.database = database_class(db_config)
         self.data_manager = DataManager(self.database)
         self.feature_engineer = None
         self.evaluator = None
@@ -700,7 +707,9 @@ class ExplainabilityEngine:
 class Forecast_Repository:
     """Owns the database connection and forecast I/O; independent of any Forecaster instance."""
     def __init__(self, db_config=None, load_map=True):
-        self.database = MySQLDatabase(db_config)
+        backend = (db_config or {}).get("backend", os.getenv("DB_BACKEND", "postgresql")).lower()
+        database_class = MySQLDatabase if backend == "mysql" else PostgreSQLDatabase
+        self.database = database_class(db_config)
         self.engine = self.database.engine
         self.db_config = self.database.db_config
         self.map_orchestrator = (

@@ -38,6 +38,7 @@ class ForecastApp:
 
     def run(self):
         self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+        self.app.aboutToQuit.connect(self._stop_forecast_thread)
         screen_widgets = {
             "Dashboard": DashboardScreen(),
             "Forecast": ForecastScreen(),
@@ -52,16 +53,34 @@ class ForecastApp:
         return self.app.exec()
 
     def _start_forecast_worker(self, dashboard: DashboardScreen) -> None:
-        self.forecast_thread = QtCore.QThread(self.app)
+        self.forecast_thread = QtCore.QThread()
         self.forecast_worker = ForecastWorker()
+
         self.forecast_worker.moveToThread(self.forecast_thread)
+
         self.forecast_thread.started.connect(self.forecast_worker.run)
-        self.forecast_worker.completed.connect(dashboard.set_forecaster)
-        self.forecast_worker.failed.connect(self._show_forecast_error)
+        self.forecast_worker.completed.connect(
+            dashboard.set_forecaster,
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
+        self.forecast_worker.failed.connect(
+            self._show_forecast_error,
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
+
         self.forecast_worker.finished.connect(self.forecast_thread.quit)
-        self.forecast_worker.finished.connect(self.forecast_worker.deleteLater)
+        self.forecast_thread.finished.connect(self.forecast_worker.deleteLater)
         self.forecast_thread.finished.connect(self.forecast_thread.deleteLater)
+
         self.forecast_thread.start()
+
+    @QtCore.Slot()
+    def _stop_forecast_thread(self) -> None:
+        thread = getattr(self, "forecast_thread", None)
+        if thread is None or not thread.isRunning():
+            return
+        thread.quit()
+        thread.wait()
 
     def _show_forecast_error(self, message: str) -> None:
         self.main_window.screens["Dashboard"].set_forecast_loading(False) # type: ignore
