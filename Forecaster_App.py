@@ -7,6 +7,7 @@
 # This file contains the main application logic for the election forecaster, including the GUI and application flow.
 
 import sys
+import traceback
 from PySide6 import QtCore
 import PySide6.QtWidgets as QtWidgets
 from forecaster_Controllers import DashboardController
@@ -22,10 +23,32 @@ class ForecastWorker(QtCore.QObject):
     @QtCore.Slot()
     def run(self) -> None:
         try:
+            print("[FORECAST] Starting forecast worker...", flush=True)
             forecaster = Forecaster_1(use_xgboost=False)
-            ForecastService(forecaster, Forecast_Repository(load_map=False)).run_forecast()
+            repository = Forecast_Repository(load_map=False)
+            print(
+                f"[FORECAST] Database backend: {type(repository.database).__name__}",
+                flush=True,
+            )
+            print("[FORECAST] Loading election data...", flush=True)
+            forecast_data = ForecastService(forecaster, repository).run_forecast()
+            print(f"[FORECAST] Generated {len(forecast_data):,} forecast rows.", flush=True)
+            if not forecast_data.empty:
+                preview_columns = [
+                    column for column in (
+                        "wd_code",
+                        "ward_name",
+                        "party_label",
+                        "final_forecast_share",
+                    )
+                    if column in forecast_data.columns
+                ]
+                print("[FORECAST] Preview:", flush=True)
+                print(forecast_data[preview_columns].head(10).to_string(index=False), flush=True)
             self.completed.emit(forecaster)
         except Exception as error:
+            print(f"[FORECAST] Failed: {error}", flush=True)
+            traceback.print_exc()
             self.failed.emit(str(error))
         finally:
             self.finished.emit()
