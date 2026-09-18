@@ -38,7 +38,6 @@ class ForecastApp:
 
     def run(self):
         self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-        self.app.aboutToQuit.connect(self._stop_forecast_thread)
         screen_widgets = {
             "Dashboard": DashboardScreen(),
             "Forecast": ForecastScreen(),
@@ -73,14 +72,6 @@ class ForecastApp:
         self.forecast_thread.finished.connect(self.forecast_thread.deleteLater)
 
         self.forecast_thread.start()
-
-    @QtCore.Slot()
-    def _stop_forecast_thread(self) -> None:
-        thread = getattr(self, "forecast_thread", None)
-        if thread is None or not thread.isRunning():
-            return
-        thread.quit()
-        thread.wait()
 
     def _show_forecast_error(self, message: str) -> None:
         self.main_window.screens["Dashboard"].set_forecast_loading(False) # type: ignore
