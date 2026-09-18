@@ -33,6 +33,8 @@ class ForecastWorker(QtCore.QObject):
             print("[FORECAST] Loading election data...", flush=True)
             forecast_data = ForecastService(forecaster, repository).run_forecast()
             print(f"[FORECAST] Generated {len(forecast_data):,} forecast rows.", flush=True)
+            saved_boundaries = repository.save_forecast_to_postgis(forecast_data)
+            print(f"[FORECAST] Saved {saved_boundaries:,} divisions to PostGIS.", flush=True)
             if not forecast_data.empty:
                 preview_columns = [
                     column for column in (

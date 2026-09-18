@@ -13,8 +13,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sqlalchemy import create_engine, text
+from datetime import datetime, timezone
 import shap
-from forecaster_data import MySQLDatabase, DataManager, PostgreSQLDatabase
+from shapely.geometry import MultiPolygon, Polygon
+from forecaster_data import MySQLDatabase, DataManager
 
 # Machine Learning framework dependencies
 from sklearn.ensemble import RandomForestRegressor
@@ -32,25 +34,20 @@ except ImportError:
 
 def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str]]:
     """Shared query logic used by both Forecaster (standalone mode) and Forecast_Repository."""
-    backend = db_config.get("backend", os.getenv("DB_BACKEND", "postgresql")).lower()
-    schema_filter = "TABLE_SCHEMA = :schema_name" if backend == "mysql" else "TABLE_SCHEMA = 'public'"
-    incumbent_expression = "MAX(er.is_incumbent_cllr)" if backend == "mysql" else "MAX(er.is_incumbent_cllr::int)"
-    uncontested_filter = "er.is_uncontested = 0" if backend == "mysql" else "er.is_uncontested IS FALSE"
-
     with engine.connect() as conn:
         poll_col = conn.execute(
             text(
-                f"""
+                """
                 SELECT COLUMN_NAME
                 FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE {schema_filter}
+                WHERE TABLE_SCHEMA = :schema_name
                   AND TABLE_NAME = 'election_results'
                   AND COLUMN_NAME IN ('national_poll_party_share', 'national_poll_share')
                 ORDER BY CASE COLUMN_NAME WHEN 'national_poll_party_share' THEN 1 ELSE 2 END
                 LIMIT 1
                 """
             ),
-            {"schema_name": db_config.get("database")},
+            {"schema_name": db_config['database']},
         ).scalar()
 
     if not poll_col:
@@ -59,11 +56,11 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
             "Expected one of: national_poll_party_share, national_poll_share"
         )
 
-    query = f"""
+    query = """
         SELECT 
             er.wd_code, ew.cc_code AS cc_code, cc.council_name, cand.registered_party AS party_name, cand.candidate_name,
             er.election_year, er.candidate_id, AVG(er.vote_share) AS party_vote_share, 
-            {incumbent_expression} AS has_incumbent_boost,
+            MAX(er.is_incumbent_cllr) AS has_incumbent_boost,
             AVG(er.{poll_col}) AS national_poll_share,
             (SUM(c.oa_pop) / SUM(c.oa_pop / NULLIF(c.pop_den, 0))) AS ward_population_density,
             AVG(c.pct_student) AS pct_student, AVG(c.pct_own_hme) AS pct_own_hme, AVG(c.pct_rent) AS pct_rent, 
@@ -77,9 +74,9 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
         LEFT JOIN county_codes cc ON ew.cc_code = cc.cc_code
         LEFT JOIN geographic_lookup gl ON er.wd_code = gl.wd_code
         LEFT JOIN census c ON gl.oa_code = c.oa_code
-        WHERE {uncontested_filter}
+        WHERE er.is_uncontested = 0
         GROUP BY er.wd_code, ew.cc_code, cc.council_name, cand.registered_party, cand.candidate_name, er.election_year, er.candidate_id;
-        """
+    """.format(poll_col=poll_col)
     df_raw = pd.read_sql(query, con=engine)
 
     try:
@@ -112,9 +109,7 @@ class Forecaster_1(iMachineLearningInterface):
     to model volatile electoral surge mechanics and voter coordination.
     """
     def __init__(self, db_config=None, use_xgboost=True):
-        backend = (db_config or {}).get("backend", os.getenv("DB_BACKEND", "postgresql")).lower()
-        database_class = MySQLDatabase if backend == "mysql" else PostgreSQLDatabase
-        self.database = database_class(db_config)
+        self.database = MySQLDatabase(db_config)
         self.data_manager = DataManager(self.database)
         self.feature_engineer = None
         self.evaluator = None
@@ -707,9 +702,7 @@ class ExplainabilityEngine:
 class Forecast_Repository:
     """Owns the database connection and forecast I/O; independent of any Forecaster instance."""
     def __init__(self, db_config=None, load_map=True):
-        backend = (db_config or {}).get("backend", os.getenv("DB_BACKEND", "postgresql")).lower()
-        database_class = MySQLDatabase if backend == "mysql" else PostgreSQLDatabase
-        self.database = database_class(db_config)
+        self.database = MySQLDatabase(db_config)
         self.engine = self.database.engine
         self.db_config = self.database.db_config
         self.map_orchestrator = (
@@ -732,6 +725,85 @@ class Forecast_Repository:
     def save_forecast_to_csv(self, forecaster: Forecaster_1, output_path: str = "election_forecast_results.csv") -> Path:
         """Saves the forecast DataFrame to a CSV file."""
         return forecaster.save_forecast_to_csv(output_path=output_path)
+
+    def save_forecast_to_postgis(self, forecast_data: pd.DataFrame) -> int:
+        """Replace council division rows with the latest forecast results."""
+        if forecast_data.empty:
+            return 0
+
+        postgres_config = {
+            "host": os.getenv("POSTGRES_HOST", "127.0.0.1"),
+            "port": os.getenv("POSTGRES_PORT", "5432"),
+            "user": os.getenv("POSTGRES_USER", "postgres"),
+            "password": os.getenv("POSTGRES_PASSWORD", ""),
+            "database": os.getenv("POSTGRES_DB", "irp_election_forecasting"),
+        }
+        postgres_url = (
+            f"postgresql+psycopg2://{postgres_config['user']}:{postgres_config['password']}@"
+            f"{postgres_config['host']}:{postgres_config['port']}/{postgres_config['database']}"
+        )
+        postgres_engine = create_engine(postgres_url)
+        boundaries = gpd.read_file(_resolve_division_boundary_path(Path(__file__).parent)).to_crs(epsg=4326)
+        division_code = next(
+            (column for column in ("CED26CD", "CED25CD", "WD26CD", "WD25CD") if column in boundaries.columns),
+            None,
+        )
+        division_name = next(
+            (column for column in ("CED26NM", "CED25NM", "WD26NM", "WD25NM", "NAME") if column in boundaries.columns),
+            None,
+        )
+        if division_code is None or division_name is None:
+            raise ValueError("Boundary layer must contain division code and name columns.")
+
+        forecast_winners = forecast_data.loc[
+            forecast_data.groupby("wd_code")["final_forecast_share"].idxmax(),
+            ["wd_code", "party_label", "final_forecast_share"],
+        ].rename(columns={
+            "wd_code": "division_code",
+            "party_label": "forecasted_winner",
+            "final_forecast_share": "forecasted_share",
+        })
+        current_winners = forecast_data.loc[
+            forecast_data.groupby("wd_code")["party_vote_share"].idxmax(),
+            ["wd_code", "party_label", "party_vote_share"],
+        ].rename(columns={
+            "wd_code": "division_code",
+            "party_label": "current_winner",
+            "party_vote_share": "current_share",
+        })
+        results = forecast_winners.merge(current_winners, on="division_code", how="outer")
+        results["division_code"] = results["division_code"].astype(str).str.strip()
+        authority_columns = [column for column in ("cc_code", "council_name") if column in forecast_data.columns]
+        authorities = forecast_data[["wd_code", *authority_columns]].drop_duplicates("wd_code").rename(
+            columns={"wd_code": "division_code"}
+        )
+        results = results.merge(authorities, on="division_code", how="left")
+
+        output = boundaries[[division_code, division_name, "geometry"]].rename(
+            columns={division_code: "division_code", division_name: "division_name"}
+        ).merge(results, on="division_code", how="left")
+        output["boundary_year"] = 2026 if "26" in division_code else 2025
+        output["council_code"] = output["cc_code"] if "cc_code" in output else pd.NA
+        output["council_name"] = output["council_name"] if "council_name" in output else pd.NA
+        output["forecast_run_at"] = datetime.now(timezone.utc)
+        output = output[[
+            "division_code", "division_name", "council_code", "council_name", "boundary_year",
+            "geometry", "forecasted_winner", "forecasted_share", "current_winner", "current_share",
+            "forecast_run_at",
+        ]]
+        output["geometry"] = gpd.GeoSeries(
+            [
+                MultiPolygon([geometry]) if isinstance(geometry, Polygon) else geometry
+                for geometry in output["geometry"]
+            ],
+            index=output.index,
+            crs=output.crs,
+        )
+
+        with postgres_engine.begin() as connection:
+            connection.exec_driver_sql("TRUNCATE TABLE council_divisions")
+        output.to_postgis("council_divisions", postgres_engine, if_exists="append", index=False)
+        return len(output)
 
     def get_ward_shap_explanation(self, forecaster: Forecaster_1, ward_name_input, feature_to_plot):
         """Returns a GeoDataFrame with SHAP values for a specific ward and feature."""

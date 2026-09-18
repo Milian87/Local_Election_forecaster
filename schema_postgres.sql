@@ -171,4 +171,21 @@ CREATE INDEX idx_lookup_version ON geographic_lookup (lookup_version_year, wd_co
 CREATE INDEX idx_geographic_lookup_wd ON geographic_lookup (wd_code);
 CREATE INDEX idx_geographic_lookup_oa ON geographic_lookup (oa_code);
 
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE TABLE council_divisions (
+    division_code      TEXT PRIMARY KEY,
+    division_name      TEXT NOT NULL,
+    council_code       TEXT,
+    council_name       TEXT,
+    boundary_year      INTEGER NOT NULL,
+    geometry           geometry(MultiPolygon, 4326) NOT NULL,
+    forecasted_winner  TEXT,
+    forecasted_share   NUMERIC(5,2),
+    current_winner     TEXT,
+    current_share      NUMERIC(5,2),
+    forecast_run_at    TIMESTAMPTZ
+);
+CREATE INDEX council_divisions_geometry_idx
+    ON council_divisions USING GIST (geometry);
+
 COMMIT;

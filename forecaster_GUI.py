@@ -349,8 +349,8 @@ class ForecastScreen(BaseScreen):
         #self.refresh_map()
 
     def populate_tables(self):
-        summary = self.controller.get_summary()
-        council_summaries = self.controller.get_council_summaries()
+        summary = self.controller.get_summary() # type: ignore
+        council_summaries = self.controller.get_council_summaries() # type: ignore
         self.summary_table.setRowCount(len(council_summaries))
         for row_index, (_, row) in enumerate(council_summaries.iterrows()):
             values = [
@@ -407,7 +407,7 @@ class ForecastScreen(BaseScreen):
         try:
             self.map_orchestrator = map_orchestrator.CouncilMapOrchestrator(str(boundary_path))
             self.map_view = self.map_orchestrator.generate(
-                self.controller.get_county_and_unitary_forecast()
+                self.controller.get_county_and_unitary_forecast() # type: ignore
             )
         except (OSError, ValueError, ImportError) as error:
             self.map_view = QtWidgets.QLabel(f"Map unavailable: {error}")
