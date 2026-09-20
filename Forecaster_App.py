@@ -49,10 +49,10 @@ class ForecastWorker(QtCore.QObject):
             print(f"[FORECAST] Generated {len(forecast_data):,} forecast rows.", flush=True)
             forecasts_folder = Path(__file__).parent / "Forecasts"
             forecasts_folder.mkdir(parents=True, exist_ok=True)
-            model_slug = re.sub(r"[^a-z0-9]+", "_", forecaster.model_name.lower()).strip("_")
+            model_slug = re.sub(r"[^a-z0-9]+", "_", forecaster.model_name.lower()).strip("_") # pyright: ignore[reportAttributeAccessIssue]
             date_slug = re.sub(r"[^a-z0-9]+", "_", self.target_label.lower()).strip("_")
             csv_path = forecasts_folder / f"forecast_{date_slug}_{model_slug}.csv"
-            forecaster.save_forecast_to_csv(csv_path)
+            forecaster.save_forecast_to_csv(csv_path) # pyright: ignore[reportArgumentType]
             print(f"[FORECAST] Saved CSV: {csv_path}", flush=True)
             saved_boundaries = repository.save_forecast_to_postgis(forecast_data)
             print(f"[FORECAST] Saved {saved_boundaries:,} divisions to PostGIS.", flush=True)
