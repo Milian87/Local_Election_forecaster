@@ -365,6 +365,7 @@ class Forecaster_1(iMachineLearningInterface):
             "council",
             "division",
             "current_councillor",
+            "incumbent_party",
             "forecasted_party",
         ]
         if self.future_data is None or self.future_data.empty:
@@ -373,8 +374,14 @@ class Forecaster_1(iMachineLearningInterface):
         data = self.future_data.copy()
         current_indexes = data.groupby("wd_code")["party_vote_share"].idxmax()
         forecast_indexes = data.groupby("wd_code")["final_forecast_share"].idxmax()
-        current = data.loc[current_indexes, ["wd_code", "candidate_name"]].rename(
-            columns={"candidate_name": "current_councillor"}
+        current = data.loc[
+            current_indexes,
+            ["wd_code", "candidate_name", "party_label"],
+        ].rename(
+            columns={
+                "candidate_name": "current_councillor",
+                "party_label": "incumbent_party",
+            }
         )
         forecast = data.loc[
             forecast_indexes,

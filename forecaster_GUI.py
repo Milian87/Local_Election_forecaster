@@ -367,9 +367,9 @@ class ForecastScreen(BaseScreen):
     def populate_tables(self):
         division_forecasts = self.controller.get_division_forecasts() # type: ignore
         self.summary_table.setHorizontalHeaderLabels(
-            ["Council", "Division", "Current Councillor", "Forecasted Party"]
+            ["Council", "Division", "Current Councillor", "Incumbent Party", "Forecasted Party"]
         )
-        self.summary_table.setColumnCount(4)
+        self.summary_table.setColumnCount(5)
         self.summary_table.setRowCount(len(division_forecasts))
         self.ward_forecast_table.setRowCount(0)
         for row_index, (_, row) in enumerate(division_forecasts.iterrows()):
@@ -377,6 +377,7 @@ class ForecastScreen(BaseScreen):
                 str(row["council"]),
                 str(row["division"]),
                 str(row["current_councillor"]),
+                str(row["incumbent_party"]),
                 str(row["forecasted_party"]),
             ]
             for column_index, value in enumerate(values):
