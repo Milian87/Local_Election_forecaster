@@ -29,6 +29,14 @@ class DashboardController:
     def get_division_forecasts(self) -> pd.DataFrame:
         return self.data_source.get_division_forecasts()
 
+    def get_division_results(self, division_code: str) -> pd.DataFrame:
+        forecast_data = self.get_forecast_data()
+        if forecast_data.empty or "wd_code" not in forecast_data.columns:
+            return pd.DataFrame()
+        return forecast_data[
+            forecast_data["wd_code"].astype(str).str.strip() == str(division_code).strip()
+        ].copy()
+
     def get_county_and_unitary_forecast(self) -> pd.DataFrame:
         if hasattr(self.data_source, "county_and_unitary_forecast"):
             return self.data_source.county_and_unitary_forecast()

@@ -361,10 +361,10 @@ class Forecaster_1(iMachineLearningInterface):
     def get_division_forecasts(self) -> pd.DataFrame:
         """Return one current and forecast winner row for every forecast division."""
         columns = [
+            "division_code",
             "council",
             "division",
             "current_councillor",
-            "forecasted_winner",
             "forecasted_party",
         ]
         if self.future_data is None or self.future_data.empty:
@@ -378,23 +378,22 @@ class Forecaster_1(iMachineLearningInterface):
         )
         forecast = data.loc[
             forecast_indexes,
-            ["wd_code", "candidate_name", "party_label"],
+            ["wd_code", "party_label"],
         ].rename(
             columns={
-                "candidate_name": "forecasted_winner",
                 "party_label": "forecasted_party",
             }
         )
-        divisions = data[
-            ["wd_code", "council_name", "ward_name"]
-        ].drop_duplicates("wd_code")
+        divisions = data[["wd_code", "council_name"]].drop_duplicates("wd_code")
+        divisions["division"] = divisions["wd_code"].map(self.ward_name_map)
         result = (
             divisions.merge(current, on="wd_code", how="left")
             .merge(forecast, on="wd_code", how="left")
-            .rename(columns={"council_name": "council", "ward_name": "division"})
+            .rename(columns={"council_name": "council"})
         )
         result["council"] = result["council"].fillna(result["wd_code"])
         result["division"] = result["division"].fillna(result["wd_code"])
+        result["division_code"] = result["wd_code"]
         return result[columns].sort_values(["council", "division"]).reset_index(drop=True)
 
     def county_and_unitary_forecast(self) -> pd.DataFrame:

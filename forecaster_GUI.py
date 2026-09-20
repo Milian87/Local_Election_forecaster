@@ -321,7 +321,7 @@ class ForecastScreen(BaseScreen):
         self.right_layout.addWidget(self.ward_forecast_container, 2)
 
         self.ward_forecast_table = TransparentTableWidget(
-            ["Ward", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
+            ["Candidate", "Party", "Current Share", "Forecast Share"]
         )
         self.ward_forecast_layout.addWidget(self.ward_forecast_table)
 
@@ -353,6 +353,7 @@ class ForecastScreen(BaseScreen):
         )
         # add a left section for the list of divisions, incumbant cllr, forecast winner
         self.left_layout.addWidget(self.summary_table, 1)
+        self.summary_table.cellClicked.connect(self._focus_map_from_table)
         self.vote_share_table = TransparentTableWidget(
             ["Party", "National Vote Share", "Seats"]
         )
@@ -366,22 +367,57 @@ class ForecastScreen(BaseScreen):
     def populate_tables(self):
         division_forecasts = self.controller.get_division_forecasts() # type: ignore
         self.summary_table.setHorizontalHeaderLabels(
-            ["Council", "Division", "Current Councillor", "Forecasted Winner", "Party"]
+            ["Council", "Division", "Current Councillor", "Forecasted Party"]
         )
-        self.summary_table.setColumnCount(5)
+        self.summary_table.setColumnCount(4)
         self.summary_table.setRowCount(len(division_forecasts))
+        self.ward_forecast_table.setRowCount(0)
         for row_index, (_, row) in enumerate(division_forecasts.iterrows()):
             values = [
                 str(row["council"]),
                 str(row["division"]),
                 str(row["current_councillor"]),
-                str(row["forecasted_winner"]),
                 str(row["forecasted_party"]),
             ]
             for column_index, value in enumerate(values):
                 self.summary_table.setItem(row_index, column_index, QtWidgets.QTableWidgetItem(value))
 
         self.summary_table.resizeColumnsToContents()
+
+        self._division_forecasts = division_forecasts
+
+    def _focus_map_from_table(self, row_index: int, column_index: int) -> None:
+        if not hasattr(self, "_division_forecasts") or row_index >= len(self._division_forecasts):
+            return
+        row = self._division_forecasts.iloc[row_index]
+        if column_index == 0:
+            self.refresh_map(focus_council=row["council"])
+        elif column_index == 1:
+            self.populate_division_results(row["division_code"])
+            self.refresh_map(focus_division=row["division_code"])
+
+    def populate_division_results(self, division_code: str) -> None:
+        results = self.controller.get_division_results(division_code) # type: ignore
+        if results.empty:
+            self.ward_forecast_table.setRowCount(0)
+            return
+
+        results = results.sort_values("final_forecast_share", ascending=False)
+        self.ward_forecast_table.setRowCount(len(results))
+        for row_index, (_, row) in enumerate(results.iterrows()):
+            values = [
+                str(row.get("candidate_name", "")),
+                str(row.get("party_label", "")),
+                f"{float(row.get('party_vote_share', 0.0)):.1f}%",
+                f"{float(row.get('final_forecast_share', 0.0)):.1f}%",
+            ]
+            for column_index, value in enumerate(values):
+                self.ward_forecast_table.setItem(
+                    row_index,
+                    column_index,
+                    QtWidgets.QTableWidgetItem(value),
+                )
+        self.ward_forecast_table.resizeColumnsToContents()
 
     def set_controller(self, controller) -> None:
         self.controller = controller
@@ -398,10 +434,15 @@ class ForecastScreen(BaseScreen):
         self.set_controller(DashboardController(forecaster))
         self.set_forecast_loading(False)
 
-    def refresh_map(self) -> None:
+    def refresh_map(self, focus_division=None, focus_council=None) -> None:
         if self.map_view is not None:
             self.map_layout.removeWidget(self.map_view)
             self.map_view.deleteLater()
+
+        self.forecast_loading_label.setText("Loading map...")
+        self.forecast_loading_label.setVisible(True)
+        self.forecast_loading_label.raise_()
+        QtWidgets.QApplication.processEvents()
 
         boundary_path = (
             Path(__file__).parent
@@ -412,13 +453,15 @@ class ForecastScreen(BaseScreen):
         try:
             self.map_orchestrator = map_orchestrator.WardMapOrchestrator(str(boundary_path))
             self.map_view = self.map_orchestrator.generate(
-                self.controller.get_county_and_unitary_forecast() # type: ignore
+                self.controller.get_county_and_unitary_forecast(), # type: ignore
+                focus_division=focus_division,
+                focus_council=focus_council,
             )
         except (OSError, ValueError, ImportError) as error:
             self.map_view = QtWidgets.QLabel(f"Map unavailable: {error}")
             self.map_view.setWordWrap(True)
         self.map_layout.addWidget(self.map_view)
-        self.forecast_loading_label.raise_()
+        self.forecast_loading_label.setVisible(False)
 
 class DataScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):

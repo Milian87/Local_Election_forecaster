@@ -118,7 +118,15 @@ class BaseMapOrchestrator:
     def _get_party_color(self, party):
         return self.party_colors.get(party, self.party_colors["Default"])
 
-    def _render_map(self, gdf_out, tooltip_fields, tooltip_aliases, fill_opacity=0.45, edge_weight=1.0):
+    def _render_map(
+        self,
+        gdf_out,
+        tooltip_fields,
+        tooltip_aliases,
+        fill_opacity=0.45,
+        edge_weight=1.0,
+        focus_geometry=None,
+    ):
         m = folium.Map(location=[52.63, -1.5], zoom_start=6, tiles="OpenStreetMap")
 
         def style_function(feature):
@@ -137,8 +145,9 @@ class BaseMapOrchestrator:
             tooltip=folium.GeoJsonTooltip(fields=tooltip_fields, aliases=tooltip_aliases, localize=True),
         ).add_to(m)
 
-        if not gdf_out.empty and gdf_out.total_bounds is not None:
-            minx, miny, maxx, maxy = gdf_out.total_bounds
+        bounds_source = focus_geometry if focus_geometry is not None and not focus_geometry.empty else gdf_out
+        if not bounds_source.empty and bounds_source.total_bounds is not None:
+            minx, miny, maxx, maxy = bounds_source.total_bounds
             if np.isfinite([minx, miny, maxx, maxy]).all():
                 m.fit_bounds([[miny, minx], [maxy, maxx]])
 
@@ -221,7 +230,7 @@ class CouncilMapOrchestrator(BaseMapOrchestrator):
         )
 
 class WardMapOrchestrator(BaseMapOrchestrator):
-    def generate(self, forecast_df):
+    def generate(self, forecast_df, focus_division=None, focus_council=None):
         gdf = self.load_geodata()
         gdf = self._attach_forecast_winners(
             gdf,
@@ -235,10 +244,36 @@ class WardMapOrchestrator(BaseMapOrchestrator):
         if ward_name_column is None:
             raise ValueError("Ward map data needs a WD25NM, CED25NM, or NAME column")
 
+        focus_geometry = None
+        if focus_division:
+            division_code = str(focus_division).strip().upper()
+            division_columns = [
+                column for column in ("WD25CD", "CED25CD") if column in gdf.columns
+            ]
+            focus_geometry = gdf[
+                gdf[division_columns].astype(str).apply(
+                    lambda values: values.str.strip().str.upper().eq(division_code).any(),
+                    axis=1,
+                )
+            ] if division_columns else gdf.iloc[0:0]
+        elif focus_council:
+            council_columns = [
+                column for column in ("CTY25NM", "CTY26NM", "LAD25NM", "LAD26NM")
+                if column in gdf.columns
+            ]
+            target_council = self._normalise_text(pd.Series([focus_council])).iloc[0]
+            focus_geometry = gdf[
+                gdf[council_columns].apply(
+                    lambda values: self._normalise_text(values).eq(target_council).any(),
+                    axis=1,
+                )
+            ] if council_columns else gdf.iloc[0:0]
+
         return self._render_map(
             gdf,
             tooltip_fields=[ward_name_column, "winner", "forecast_share"],
             tooltip_aliases=["Ward:", "Projected Winner:", "Vote Share:"],
             fill_opacity=0.45,
             edge_weight=1.0,
+            focus_geometry=focus_geometry,
         )
