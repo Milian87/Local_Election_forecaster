@@ -23,10 +23,10 @@ class ForecastWorker(QtCore.QObject):
     finished = QtCore.Signal()
 
     @QtCore.Slot()
-    def __init__(self, compositional=False, target_year=2027, target_label="Tomorrow"):
+    def __init__(self, compositional=False, target_date="2026-09-21", target_label="Tomorrow"):
         super().__init__()
         self.compositional = compositional
-        self.target_year = target_year
+        self.target_date = target_date
         self.target_label = target_label
 
     @QtCore.Slot()
@@ -34,9 +34,9 @@ class ForecastWorker(QtCore.QObject):
         try:
             print("[FORECAST] Starting forecast worker...", flush=True)
             forecaster = (
-                Forecast_2(target_year=self.target_year)
+                Forecast_2(target_year=int(self.target_date[:4]))
                 if self.compositional
-                else Forecaster_1(use_xgboost=False, target_year=self.target_year)
+                else Forecaster_1(use_xgboost=False, target_year=int(self.target_date[:4]))
             )
             forecaster.model_name = "Softmax Model" if self.compositional else "Delta Model" # pyright: ignore[reportAttributeAccessIssue]
             repository = Forecast_Repository(load_map=False)
@@ -45,7 +45,7 @@ class ForecastWorker(QtCore.QObject):
                 flush=True,
             )
             print("[FORECAST] Loading election data...", flush=True)
-            forecast_data = ForecastService(forecaster, repository).run_forecast(self.target_year)
+            forecast_data = ForecastService(forecaster, repository).run_forecast(self.target_date)
             print(f"[FORECAST] Generated {len(forecast_data):,} forecast rows.", flush=True)
             forecasts_folder = Path(__file__).parent / "Forecasts"
             forecasts_folder.mkdir(parents=True, exist_ok=True)
@@ -105,7 +105,7 @@ class ForecastApp:
         )
         return self.app.exec()
 
-    def _reforecast(self, model_name: str, target_year: int, target_label: str) -> None:
+    def _reforecast(self, model_name: str, target_date: str, target_label: str) -> None:
         dashboard = self.main_window.screens["Dashboard"] # type: ignore
         forecast = self.main_window.screens["Forecast"] # type: ignore
         dashboard.set_forecast_loading(True)
@@ -115,7 +115,7 @@ class ForecastApp:
             dashboard,
             forecast,
             compositional=model_name == "Softmax Model",
-            target_year=target_year,
+            target_date=target_date,
             target_label=target_label,
         )
 
@@ -124,13 +124,13 @@ class ForecastApp:
         dashboard: DashboardScreen,
         forecast: ForecastScreen,
         compositional=False,
-        target_year=2027,
+        target_date="2026-09-21",
         target_label="Tomorrow",
     ) -> None:
         self.forecast_thread = QtCore.QThread()
         self.forecast_worker = ForecastWorker(
             compositional=compositional,
-            target_year=target_year,
+            target_date=target_date,
             target_label=target_label,
         )
 

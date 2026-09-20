@@ -60,7 +60,7 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
     query = """
         SELECT 
             er.wd_code, ew.cc_code AS cc_code, cc.council_name, cand.registered_party AS party_name, cand.candidate_name,
-            er.election_year, er.candidate_id, AVG(er.vote_share) AS party_vote_share, 
+            er.election_date, er.election_year, er.candidate_id, AVG(er.vote_share) AS party_vote_share, 
             MAX(er.is_incumbent_cllr) AS has_incumbent_boost,
             AVG(er.{poll_col}) AS national_poll_share,
             (SUM(c.oa_pop) / SUM(c.oa_pop / NULLIF(c.pop_den, 0))) AS ward_population_density,
@@ -76,7 +76,7 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
         LEFT JOIN geographic_lookup gl ON er.wd_code = gl.wd_code
         LEFT JOIN census c ON gl.oa_code = c.oa_code
         WHERE er.is_uncontested = 0
-        GROUP BY er.wd_code, ew.cc_code, cc.council_name, cand.registered_party, cand.candidate_name, er.election_year, er.candidate_id;
+        GROUP BY er.wd_code, ew.cc_code, cc.council_name, cand.registered_party, cand.candidate_name, er.election_date, er.election_year, er.candidate_id;
     """.format(poll_col=poll_col)
     df_raw = pd.read_sql(query, con=engine)
 
@@ -169,6 +169,7 @@ class Forecaster_1(iMachineLearningInterface):
         self.last_rmse = None
         self.last_r2 = None
         self.target_year = target_year
+        self.target_date = f"{target_year}-01-01"
 
     def prepare_data(self, raw_data: pd.DataFrame, ward_name_map: dict[str, str]) -> None:
         """iMachineLearningInterface entry point: accept externally supplied data instead of querying internally."""
@@ -197,7 +198,7 @@ class Forecaster_1(iMachineLearningInterface):
         candidate_drops = [
             'party_vote_share', 'prior_vote_share', 'current_ward_rank', 'prior_ward_rank',
             'diff_vote_share', 'election_year', 'wd_code', 'cc_code', 'party_label', 
-            'candidate_id', 'candidate_name', 'council_name'
+            'candidate_id', 'candidate_name', 'council_name', 'election_date'
         ]
         columns_to_drop = [col for col in candidate_drops if col in historical_data.columns]
         
@@ -506,7 +507,7 @@ class Forecaster_1(iMachineLearningInterface):
         columns_to_drop = [
             'party_vote_share', 'prior_vote_share', 'current_ward_rank', 'prior_ward_rank',
             'diff_vote_share', 'election_year', 'wd_code', 'cc_code', 'party_label', 
-            'candidate_id', 'candidate_name', 'council_name'
+            'candidate_id', 'candidate_name', 'council_name', 'election_date'
         ]
         
         X_train = historical_data.drop(columns=[col for col in columns_to_drop if col in historical_data.columns]).astype(float)
@@ -622,6 +623,7 @@ class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
         self.last_r2 = None
         self.explainer = None
         self.target_year = target_year
+        self.target_date = f"{target_year}-01-01"
         self.census_features = [
             "pct_student",
             "pct_own_hme",
@@ -659,7 +661,7 @@ class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
 
         candidate_drops = [
             "party_vote_share",
-            "election_year",
+            "election_date",
             "wd_code",
             "cc_code",
             "candidate_id",
@@ -697,7 +699,7 @@ class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
 
         candidate_drops = [
             "party_vote_share",
-            "election_year",
+            "election_date",
             "wd_code",
             "cc_code",
             "candidate_id",
@@ -761,6 +763,10 @@ class FeatureEngineer():
     def engineer_features(self) -> None:
         """Shared pandas preprocessing used by both extract_and_prepare_data() and prepare_data()."""
         print("Processing localized historical party baseline frameworks...")
+        election_dates = pd.to_datetime(self.df_raw["election_date"], errors="coerce")
+        self.df_raw["election_date_ordinal"] = (
+            election_dates - pd.Timestamp("2016-01-01")
+        ).dt.days.astype(float)
         historical_averages = (
             self.df_raw[self.df_raw['election_year'] < self.target_year] # pyright: ignore[reportOptionalSubscript]
             .groupby(['wd_code', 'party_name'], group_keys=False)['party_vote_share']
@@ -1043,22 +1049,23 @@ class ForecastService:
     @staticmethod
     def _prepare_target_dataset(
         raw_data: pd.DataFrame,
-        target_year: int,
+        target_date: str,
     ) -> pd.DataFrame:
-        years = sorted(pd.to_numeric(raw_data["election_year"], errors="coerce").dropna().astype(int).unique())
-        if not years:
+        raw_data = raw_data.copy()
+        raw_data["election_date"] = pd.to_datetime(raw_data["election_date"], errors="coerce")
+        selected_date = pd.Timestamp(target_date)
+        available_dates = sorted(raw_data["election_date"].dropna().unique())
+        if not available_dates:
             raise ValueError("No dated election results are available for forecasting.")
 
-        raw_data = raw_data.copy()
-        raw_data["election_year"] = pd.to_numeric(raw_data["election_year"], errors="coerce").astype(int)
-        latest_year = years[-1]
-        if target_year <= latest_year:
-            target_rows = raw_data[raw_data["election_year"] == target_year].copy()
-            training_rows = raw_data[raw_data["election_year"] < target_year].copy()
+        latest_date = available_dates[-1]
+        target_rows = raw_data[raw_data["election_date"] == selected_date].copy()
+        if not target_rows.empty:
+            training_rows = raw_data[raw_data["election_date"] < selected_date].copy()
             if target_rows.empty:
-                raise ValueError(f"No election results are available for target year {target_year}.")
+                raise ValueError(f"No election results are available for target date {target_date}.")
             previous = (
-                training_rows.sort_values("election_year")
+                training_rows.sort_values("election_date")
                 .drop_duplicates(["wd_code", "party_name"], keep="last")
                 [["wd_code", "party_name", "party_vote_share"]]
                 .rename(columns={"party_vote_share": "baseline_vote_share"})
@@ -1068,20 +1075,30 @@ class ForecastService:
             )
             target_rows["party_vote_share"] = target_rows["baseline_vote_share"].fillna(0.0)
             target_rows = target_rows.drop(columns=["baseline_vote_share"])
-            target_rows["election_year"] = target_year
+            target_rows["election_year"] = selected_date.year
             return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
 
         training_rows = raw_data.copy()
-        target_rows = raw_data[raw_data["election_year"] == latest_year].copy()
-        target_rows["election_year"] = target_year
+        if selected_date <= latest_date:
+            raise ValueError(f"No election results are available for target date {target_date}.")
+        target_rows = raw_data[raw_data["election_date"] == latest_date].copy()
+        target_rows["election_date"] = selected_date
+        target_rows["election_year"] = latest_date.year + 1
         return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
 
-    def run_forecast(self, target_year: int | None = None) -> pd.DataFrame:
+    def run_forecast(self, target_date: str | None = None) -> pd.DataFrame:
         """Load data, create a leakage-safe target set, then train and forecast."""
         raw_data, ward_name_map = self.repository.load_election_data()
-        selected_year = target_year or getattr(self.forecaster, "target_year", 2027)
-        self.forecaster.target_year = selected_year
-        forecast_input = self._prepare_target_dataset(raw_data, selected_year)
+        selected_date = target_date or getattr(self.forecaster, "target_date", "2027-09-21")
+        self.forecaster.target_date = selected_date
+        selected_timestamp = pd.Timestamp(selected_date)
+        latest_timestamp = pd.to_datetime(raw_data["election_date"], errors="coerce").max()
+        self.forecaster.target_year = (
+            selected_timestamp.year
+            if selected_timestamp <= latest_timestamp
+            else latest_timestamp.year + 1
+        )
+        forecast_input = self._prepare_target_dataset(raw_data, selected_date)
         self.forecaster.prepare_data(forecast_input, ward_name_map)
         self.forecaster.train_and_evaluate()
         return self.forecaster.forecast()

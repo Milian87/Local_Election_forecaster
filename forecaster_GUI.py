@@ -97,33 +97,33 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.model_selector)
 
         self.date_selector = QtWidgets.QComboBox()
-        for label, year in (
-            ("2019 election", 2019),
-            ("2021 election", 2021),
-            ("2022 election", 2022),
-            ("2023 election", 2023),
-            ("2024 election", 2024),
-            ("2025 election", 2025),
-            ("16 April 2026", 2026),
-            ("23 April 2026", 2026),
-            ("30 April 2026", 2026),
-            ("7 May 2026", 2026),
-            ("8 May 2026", 2026),
-            ("15 May 2026", 2026),
-            ("22 May 2026", 2026),
-            ("29 May 2026", 2026),
-            ("5 June 2026", 2026),
-            ("12 June 2026", 2026),
-            ("19 June 2026", 2026),
-            ("26 June 2026", 2026),
-            ("3 July 2026", 2026),
-            ("10 July 2026", 2026),
-            ("17 July 2026", 2026),
-            ("24 July 2026", 2026),
-            ("31 July 2026", 2026),
-            ("Tomorrow", 2027),
+        for label, date_value in (
+            ("2019 election", "2019-05-02"),
+            ("2021 election", "2021-05-06"),
+            ("2022 election", "2022-05-05"),
+            ("2023 election", "2023-05-04"),
+            ("2024 election", "2024-05-02"),
+            ("2025 election", "2025-05-01"),
+            ("16 April 2026", "2026-04-16"),
+            ("23 April 2026", "2026-04-23"),
+            ("30 April 2026", "2026-04-30"),
+            ("7 May 2026", "2026-05-07"),
+            ("8 May 2026", "2026-05-08"),
+            ("15 May 2026", "2026-05-15"),
+            ("22 May 2026", "2026-05-22"),
+            ("29 May 2026", "2026-05-29"),
+            ("5 June 2026", "2026-06-05"),
+            ("12 June 2026", "2026-06-12"),
+            ("19 June 2026", "2026-06-19"),
+            ("26 June 2026", "2026-06-26"),
+            ("3 July 2026", "2026-07-03"),
+            ("10 July 2026", "2026-07-10"),
+            ("17 July 2026", "2026-07-17"),
+            ("24 July 2026", "2026-07-24"),
+            ("31 July 2026", "2026-07-31"),
+            ("Tomorrow", "2026-09-21"),
         ):
-            self.date_selector.addItem(label, year)
+            self.date_selector.addItem(label, date_value)
         self.date_selector.setCurrentIndex(self.date_selector.count() - 1)
         self.date_selector.setToolTip("Choose the election date to forecast or backtest")
         layout.addWidget(self.date_selector)
