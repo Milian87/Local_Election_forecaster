@@ -7,5 +7,5 @@ SELECT
     DENSE_RANK() OVER (ORDER BY er.election_date ASC) AS "Remaining Elections Countdown"
 FROM election_results er
 JOIN candidates c ON er.candidate_id = c.candidate_id
-WHERE er.election_date < '2022-01-27'
+WHERE er.election_date < '2026-10-27' AND er.election_date > '2026-05-07'
 ORDER BY er.election_date DESC;
