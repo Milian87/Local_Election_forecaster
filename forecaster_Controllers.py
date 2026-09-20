@@ -26,6 +26,9 @@ class DashboardController:
     def get_council_summaries(self) -> pd.DataFrame:
         return self.data_source.get_council_summaries()
 
+    def get_division_forecasts(self) -> pd.DataFrame:
+        return self.data_source.get_division_forecasts()
+
     def get_county_and_unitary_forecast(self) -> pd.DataFrame:
         if hasattr(self.data_source, "county_and_unitary_forecast"):
             return self.data_source.county_and_unitary_forecast()

@@ -73,10 +73,11 @@ class ForecastApp:
         self.main_window = MainWindow(screen_widgets)
         self.main_window.showMaximized()
         screen_widgets["Dashboard"].set_forecast_loading(True)
-        self._start_forecast_worker(screen_widgets["Dashboard"])
+        screen_widgets["Forecast"].set_forecast_loading(True)
+        self._start_forecast_worker(screen_widgets["Dashboard"], screen_widgets["Forecast"])
         return self.app.exec()
 
-    def _start_forecast_worker(self, dashboard: DashboardScreen) -> None:
+    def _start_forecast_worker(self, dashboard: DashboardScreen, forecast: ForecastScreen) -> None:
         self.forecast_thread = QtCore.QThread()
         self.forecast_worker = ForecastWorker()
 
@@ -85,6 +86,10 @@ class ForecastApp:
         self.forecast_thread.started.connect(self.forecast_worker.run)
         self.forecast_worker.completed.connect(
             dashboard.set_forecaster,
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
+        self.forecast_worker.completed.connect(
+            forecast.set_forecaster,
             QtCore.Qt.ConnectionType.QueuedConnection,
         )
         self.forecast_worker.failed.connect(
@@ -100,6 +105,7 @@ class ForecastApp:
 
     def _show_forecast_error(self, message: str) -> None:
         self.main_window.screens["Dashboard"].set_forecast_loading(False) # type: ignore
+        self.main_window.screens["Forecast"].set_forecast_loading(False) # type: ignore
         QtWidgets.QMessageBox.warning(
             self.main_window,
             "Forecast Unavailable",

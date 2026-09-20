@@ -39,7 +39,7 @@ class DemocracyClubResultsAdapter:
         )
 
         if "ward_name" not in prepared.columns:
-            prepared["ward_name"] = prepared.get("post_label", "").fillna("")
+            prepared["ward_name"] = prepared.get("post_label", "").fillna("") # pyright: ignore[reportAttributeAccessIssue]
         if "seats_available" not in prepared.columns:
             prepared["seats_available"] = 1
 
@@ -157,12 +157,46 @@ class ElectionResultsImporter:
 
         self.database.connect()
         try:
+            prepared = self._filter_supported_wards(prepared)
+            if prepared.empty:
+                return 0
             self._store_candidates(prepared)
             results = self._resolve_candidate_ids(prepared)
             self._store_results(results)
         finally:
             self.database.disconnect()
         return len(prepared)
+
+    def _filter_supported_wards(self, results: pd.DataFrame) -> pd.DataFrame:
+        if results.empty:
+            return results.copy()
+
+        valid_wards = self.database.fetch_dataframe(
+            "SELECT wd_code, cc_code, lad_code FROM electoral_wards"
+        )
+        if valid_wards.empty:
+            return pd.DataFrame(columns=results.columns)
+
+        valid_wards = valid_wards[["wd_code", "cc_code", "lad_code"]].copy()
+        valid_wards["wd_code"] = valid_wards["wd_code"].fillna("").astype(str).str.strip()
+        valid_wards["cc_code"] = valid_wards["cc_code"].fillna("").astype(str).str.strip()
+        valid_wards["lad_code"] = valid_wards["lad_code"].fillna("").astype(str).str.strip()
+
+        prepared = results.copy()
+        prepared["wd_code"] = prepared["wd_code"].fillna("").astype(str).str.strip()
+
+        merged = prepared.merge(
+            valid_wards,
+            on="wd_code",
+            how="left",
+            validate="many_to_one",
+            suffixes=("", "_scope"),
+        )
+
+        filtered = merged[merged["cc_code"].notna()].copy()
+        filtered = filtered[~filtered["cc_code"].astype(str).str.startswith(("S", "W"))].copy()
+        filtered = filtered[filtered["lad_code"].fillna("").astype(str).str.strip().eq("")].copy()
+        return filtered.drop(columns=["cc_code", "lad_code"]).copy()
 
     @classmethod
     def prepare_results(cls, dataframe: pd.DataFrame, source_path: str | Path = "") -> pd.DataFrame:
@@ -244,7 +278,7 @@ class ElectionResultsImporter:
         ]
         update_columns = [column for column in columns if column not in {"wd_code", "election_date", "candidate_id"}]
 
-        if hasattr(self.database, "engine") and getattr(self.database.engine.dialect, "name", "") == "postgresql":
+        if hasattr(self.database, "engine") and getattr(self.database.engine.dialect, "name", "") == "postgresql": # pyright: ignore[reportAttributeAccessIssue]
             statement = f"""
                 INSERT INTO election_results ({", ".join(columns)})
                 VALUES ({", ".join(f":{column}" for column in columns)})

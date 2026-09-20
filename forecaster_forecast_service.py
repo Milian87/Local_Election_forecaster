@@ -358,6 +358,45 @@ class Forecaster_1(iMachineLearningInterface):
             ["council", "current_party", "forecasted_winner", "seats_gained"]
         ].sort_values("council").reset_index(drop=True)
 
+    def get_division_forecasts(self) -> pd.DataFrame:
+        """Return one current and forecast winner row for every forecast division."""
+        columns = [
+            "council",
+            "division",
+            "current_councillor",
+            "forecasted_winner",
+            "forecasted_party",
+        ]
+        if self.future_data is None or self.future_data.empty:
+            return pd.DataFrame(columns=columns)
+
+        data = self.future_data.copy()
+        current_indexes = data.groupby("wd_code")["party_vote_share"].idxmax()
+        forecast_indexes = data.groupby("wd_code")["final_forecast_share"].idxmax()
+        current = data.loc[current_indexes, ["wd_code", "candidate_name"]].rename(
+            columns={"candidate_name": "current_councillor"}
+        )
+        forecast = data.loc[
+            forecast_indexes,
+            ["wd_code", "candidate_name", "party_label"],
+        ].rename(
+            columns={
+                "candidate_name": "forecasted_winner",
+                "party_label": "forecasted_party",
+            }
+        )
+        divisions = data[
+            ["wd_code", "council_name", "ward_name"]
+        ].drop_duplicates("wd_code")
+        result = (
+            divisions.merge(current, on="wd_code", how="left")
+            .merge(forecast, on="wd_code", how="left")
+            .rename(columns={"council_name": "council", "ward_name": "division"})
+        )
+        result["council"] = result["council"].fillna(result["wd_code"])
+        result["division"] = result["division"].fillna(result["wd_code"])
+        return result[columns].sort_values(["council", "division"]).reset_index(drop=True)
+
     def county_and_unitary_forecast(self) -> pd.DataFrame:
         """Return forecast rows for English county and unitary authorities only."""
         forecast_data = self.forecast()

@@ -289,7 +289,6 @@ class ForecastScreen(BaseScreen):
         self.controller = controller
         layout = QtWidgets.QVBoxLayout(self)
 
-
         # initialize the frame and layout for the Forecast content
         self.frame = QtWidgets.QFrame()
         self.Forecast_layout = QtWidgets.QHBoxLayout(self.frame)
@@ -302,13 +301,29 @@ class ForecastScreen(BaseScreen):
         self.Forecast_layout.addWidget(self.left_frame)
 
         
-        # add the right layout for the map
+        # add the right layout for the map and ward's forecast table
         self.right_frame = QtWidgets.QFrame()
-        self.right_frame.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
-        self.right_layout = QtWidgets.QStackedLayout(self.right_frame)
-        self.right_layout.setStackingMode(QtWidgets.QStackedLayout.StackingMode.StackAll)
+        self.right_frame.setStyleSheet("background: transparent;")
+        self.right_layout = QtWidgets.QVBoxLayout(self.right_frame)
         self.right_frame.setFixedWidth(750)
         self.Forecast_layout.addWidget(self.right_frame)
+
+        # add an upper section for the forecast map
+        self.map_container = QtWidgets.QFrame()
+        self.map_container.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
+        self.map_layout = QtWidgets.QVBoxLayout(self.map_container)
+        self.right_layout.addWidget(self.map_container, 3)
+
+        # add a lower section for the ward's forecast table
+        self.ward_forecast_container = QtWidgets.QFrame()
+        self.ward_forecast_container.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
+        self.ward_forecast_layout = QtWidgets.QVBoxLayout(self.ward_forecast_container)
+        self.right_layout.addWidget(self.ward_forecast_container, 2)
+
+        self.ward_forecast_table = TransparentTableWidget(
+            ["Ward", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
+        )
+        self.ward_forecast_layout.addWidget(self.ward_forecast_table)
 
         self.forecast_loading_label = QtWidgets.QLabel(
             "We are now conducting the forecast, please wait"
@@ -323,8 +338,8 @@ class ForecastScreen(BaseScreen):
             "border-radius: 8px; color: #123; font-size: 16px; "
             "font-weight: bold; padding: 12px;"
         )
-        self.right_layout.addWidget(self.forecast_loading_label)
-        self.right_layout.setAlignment(
+        self.map_layout.addWidget(self.forecast_loading_label)
+        self.map_layout.setAlignment(
             self.forecast_loading_label,
             QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter,
         )
@@ -336,12 +351,12 @@ class ForecastScreen(BaseScreen):
         self.summary_table = TransparentTableWidget(
             ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
         )
-        self.left_layout.addWidget(self.summary_table)
-
+        # add a left section for the list of divisions, incumbant cllr, forecast winner
+        self.left_layout.addWidget(self.summary_table, 1)
         self.vote_share_table = TransparentTableWidget(
-            ["Party", "national Vote Share", "Seats"]
+            ["Party", "National Vote Share", "Seats"]
         )
-        self.left_layout.addWidget(self.vote_share_table)
+        self.vote_share_table.setVisible(False)
 
         #self.populate_tables()
 
@@ -349,34 +364,24 @@ class ForecastScreen(BaseScreen):
         #self.refresh_map()
 
     def populate_tables(self):
-        summary = self.controller.get_summary() # type: ignore
-        council_summaries = self.controller.get_council_summaries() # type: ignore
-        self.summary_table.setRowCount(len(council_summaries))
-        for row_index, (_, row) in enumerate(council_summaries.iterrows()):
+        division_forecasts = self.controller.get_division_forecasts() # type: ignore
+        self.summary_table.setHorizontalHeaderLabels(
+            ["Council", "Division", "Current Councillor", "Forecasted Winner", "Party"]
+        )
+        self.summary_table.setColumnCount(5)
+        self.summary_table.setRowCount(len(division_forecasts))
+        for row_index, (_, row) in enumerate(division_forecasts.iterrows()):
             values = [
                 str(row["council"]),
-                str(row["current_party"]),
+                str(row["division"]),
+                str(row["current_councillor"]),
                 str(row["forecasted_winner"]),
-                f"{int(row['seats_gained']):+d}",
+                str(row["forecasted_party"]),
             ]
             for column_index, value in enumerate(values):
                 self.summary_table.setItem(row_index, column_index, QtWidgets.QTableWidgetItem(value))
 
-        total_seats = summary["seats_forecast"].sum()
-        self.vote_share_table.setRowCount(len(summary))
-        for row_index, (_, row) in enumerate(summary.iterrows()):
-            seat_share = 0 if total_seats == 0 else row["seats_forecast"] / total_seats * 100
-            values = [
-                row["party"],
-                f"{seat_share:.1f}%",
-                str(int(row["seats_forecast"])),
-            ]
-            for column_index, value in enumerate(values):
-                self.vote_share_table.setItem(
-                    row_index,
-                    column_index,
-                    QtWidgets.QTableWidgetItem(value),
-                )
+        self.summary_table.resizeColumnsToContents()
 
     def set_controller(self, controller) -> None:
         self.controller = controller
@@ -395,7 +400,7 @@ class ForecastScreen(BaseScreen):
 
     def refresh_map(self) -> None:
         if self.map_view is not None:
-            self.right_layout.removeWidget(self.map_view)
+            self.map_layout.removeWidget(self.map_view)
             self.map_view.deleteLater()
 
         boundary_path = (
@@ -405,14 +410,14 @@ class ForecastScreen(BaseScreen):
             / "CED_MAY_2025_EN_BFC.shp"
         )
         try:
-            self.map_orchestrator = map_orchestrator.CouncilMapOrchestrator(str(boundary_path))
+            self.map_orchestrator = map_orchestrator.WardMapOrchestrator(str(boundary_path))
             self.map_view = self.map_orchestrator.generate(
                 self.controller.get_county_and_unitary_forecast() # type: ignore
             )
         except (OSError, ValueError, ImportError) as error:
             self.map_view = QtWidgets.QLabel(f"Map unavailable: {error}")
             self.map_view.setWordWrap(True)
-        self.right_layout.addWidget(self.map_view)
+        self.map_layout.addWidget(self.map_view)
         self.forecast_loading_label.raise_()
 
 class DataScreen(BaseScreen):
