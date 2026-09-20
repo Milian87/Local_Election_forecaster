@@ -8,6 +8,8 @@
 
 import sys
 import traceback
+import re
+from pathlib import Path
 from PySide6 import QtCore
 import PySide6.QtWidgets as QtWidgets
 from forecaster_Controllers import DashboardController
@@ -21,10 +23,11 @@ class ForecastWorker(QtCore.QObject):
     finished = QtCore.Signal()
 
     @QtCore.Slot()
-    def __init__(self, compositional=False, target_year=2027):
+    def __init__(self, compositional=False, target_year=2027, target_label="Tomorrow"):
         super().__init__()
         self.compositional = compositional
         self.target_year = target_year
+        self.target_label = target_label
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -44,6 +47,13 @@ class ForecastWorker(QtCore.QObject):
             print("[FORECAST] Loading election data...", flush=True)
             forecast_data = ForecastService(forecaster, repository).run_forecast(self.target_year)
             print(f"[FORECAST] Generated {len(forecast_data):,} forecast rows.", flush=True)
+            forecasts_folder = Path(__file__).parent / "Forecasts"
+            forecasts_folder.mkdir(parents=True, exist_ok=True)
+            model_slug = re.sub(r"[^a-z0-9]+", "_", forecaster.model_name.lower()).strip("_")
+            date_slug = re.sub(r"[^a-z0-9]+", "_", self.target_label.lower()).strip("_")
+            csv_path = forecasts_folder / f"forecast_{date_slug}_{model_slug}.csv"
+            forecaster.save_forecast_to_csv(csv_path)
+            print(f"[FORECAST] Saved CSV: {csv_path}", flush=True)
             saved_boundaries = repository.save_forecast_to_postgis(forecast_data)
             print(f"[FORECAST] Saved {saved_boundaries:,} divisions to PostGIS.", flush=True)
             if not forecast_data.empty:
@@ -88,7 +98,11 @@ class ForecastApp:
         screen_widgets["Dashboard"].set_forecast_loading(True)
         screen_widgets["Forecast"].set_forecast_loading(True)
         self.main_window.set_reforecast_enabled(False)
-        self._start_forecast_worker(screen_widgets["Dashboard"], screen_widgets["Forecast"])
+        self._start_forecast_worker(
+            screen_widgets["Dashboard"],
+            screen_widgets["Forecast"],
+            target_label="Tomorrow",
+        )
         return self.app.exec()
 
     def _reforecast(self, model_name: str, target_year: int, target_label: str) -> None:
@@ -117,6 +131,7 @@ class ForecastApp:
         self.forecast_worker = ForecastWorker(
             compositional=compositional,
             target_year=target_year,
+            target_label=target_label,
         )
 
         self.forecast_worker.moveToThread(self.forecast_thread)
