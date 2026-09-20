@@ -11,6 +11,102 @@ from forecaster_data import DataManager
 from forecaster_interfaces import iDatabaseInterface
 
 
+class DemocracyClubResultsAdapter:
+    """Convert a Democracy Club by-election export into the app's result schema."""
+
+    raw_required_columns = {"person_name", "party_name", "election_date", "gss"}
+
+    @classmethod
+    def map_dataframe(cls, dataframe: pd.DataFrame) -> pd.DataFrame:
+        missing_columns = cls.raw_required_columns.difference(dataframe.columns)
+        if missing_columns:
+            raise ValueError(
+                "Democracy Club export is missing required columns: "
+                f"{', '.join(sorted(missing_columns))}"
+            )
+
+        prepared = dataframe.copy()
+        prepared = prepared.rename(
+            columns={
+                "person_name": "candidate_name",
+                "gss": "wd_code",
+                "post_label": "ward_name",
+                "votes_cast": "votes_received",
+                "elected": "is_elected",
+                "cancelled_poll": "is_uncontested",
+                "seats_contested": "seats_available",
+            }
+        )
+
+        if "ward_name" not in prepared.columns:
+            prepared["ward_name"] = prepared.get("post_label", "").fillna("")
+        if "seats_available" not in prepared.columns:
+            prepared["seats_available"] = 1
+
+        prepared["wd_code"] = prepared["wd_code"].fillna(prepared.get("post_id", "")).astype(str).str.strip()
+        prepared["ward_name"] = prepared["ward_name"].fillna("").astype(str).str.strip()
+        prepared["candidate_name"] = (
+            prepared["candidate_name"].fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+        )
+        prepared["party_name"] = prepared["party_name"].fillna("Independent").astype(str).str.strip()
+        prepared["registered_party"] = prepared["party_name"].map(DataManager.normalise_party_name)
+        prepared["election_date"] = pd.to_datetime(
+            prepared["election_date"], format="mixed", dayfirst=True, errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+
+        prepared["votes_received"] = pd.to_numeric(
+            prepared.get("votes_received", pd.Series(0, index=prepared.index)),
+            errors="coerce",
+        ).fillna(0).astype(int)
+        prepared["seats_available"] = pd.to_numeric(
+            prepared.get("seats_available", pd.Series(1, index=prepared.index)),
+            errors="coerce",
+        ).fillna(1).astype(int)
+        prepared["is_uncontested"] = (
+            prepared.get("is_uncontested", pd.Series(False, index=prepared.index))
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin({"1", "true", "t", "yes", "y"})
+            .astype(bool)
+        )
+        prepared["is_elected"] = (
+            prepared.get("is_elected", pd.Series(False, index=prepared.index))
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin({"1", "true", "t", "yes", "y"})
+            .astype(bool)
+        )
+        prepared["vote_share"] = 0.0
+        prepared["election_year"] = pd.to_datetime(prepared["election_date"], errors="coerce").dt.year
+        prepared["national_poll_party_share"] = 0.0
+        prepared["prior_ward_closeness_margin"] = 0.0
+        prepared["is_incumbent_cllr"] = False
+
+        prepared = prepared[
+            [
+                "wd_code",
+                "ward_name",
+                "candidate_name",
+                "party_name",
+                "election_date",
+                "election_year",
+                "votes_received",
+                "vote_share",
+                "seats_available",
+                "is_uncontested",
+                "is_elected",
+                "is_incumbent_cllr",
+                "national_poll_party_share",
+                "prior_ward_closeness_margin",
+                "registered_party",
+            ]
+        ].copy()
+        prepared = prepared[(prepared["wd_code"] != "") & (prepared["candidate_name"] != "")].copy()
+        return prepared
+
+
 class ElectionResultsImporter:
     """Stores processed election result files through the database abstraction."""
 
@@ -42,6 +138,22 @@ class ElectionResultsImporter:
         prepared = self.prepare_results(dataframe, file_path)
         if prepared.empty:
             return 0
+        return self.import_dataframe(prepared, file_path)
+
+    def import_democracy_club_file(self, file_path: str | Path) -> int:
+        dataframe = pd.read_csv(file_path, low_memory=False)
+        prepared = DemocracyClubResultsAdapter.map_dataframe(dataframe)
+        if prepared.empty:
+            return 0
+        return self.import_dataframe(prepared, file_path)
+
+    def import_dataframe(self, prepared: pd.DataFrame, source_path: str | Path = "") -> int:
+        if prepared.empty:
+            return 0
+
+        if "registered_party" not in prepared.columns:
+            prepared = prepared.copy()
+            prepared["registered_party"] = prepared["party_name"].map(DataManager.normalise_party_name)
 
         self.database.connect()
         try:
@@ -131,11 +243,21 @@ class ElectionResultsImporter:
             "national_poll_party_share", "prior_ward_closeness_margin",
         ]
         update_columns = [column for column in columns if column not in {"wd_code", "election_date", "candidate_id"}]
-        statement = f"""
-            INSERT INTO election_results ({", ".join(columns)})
-            VALUES ({", ".join(f":{column}" for column in columns)})
-            ON DUPLICATE KEY UPDATE {", ".join(f"{column} = VALUES({column})" for column in update_columns)}
-        """
+
+        if hasattr(self.database, "engine") and getattr(self.database.engine.dialect, "name", "") == "postgresql":
+            statement = f"""
+                INSERT INTO election_results ({", ".join(columns)})
+                VALUES ({", ".join(f":{column}" for column in columns)})
+                ON CONFLICT (wd_code, election_date, candidate_id)
+                DO UPDATE SET {", ".join(f"{column} = EXCLUDED.{column}" for column in update_columns)}
+            """
+        else:
+            statement = f"""
+                INSERT INTO election_results ({", ".join(columns)})
+                VALUES ({", ".join(f":{column}" for column in columns)})
+                ON DUPLICATE KEY UPDATE {", ".join(f"{column} = VALUES({column})" for column in update_columns)}
+            """
+
         self.database.execute_many(statement, results[columns].to_dict(orient="records"))
 
     @staticmethod

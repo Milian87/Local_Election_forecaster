@@ -3,13 +3,13 @@ SET national_poll_party_share = sub.new_poll_value
 FROM (
     VALUES 
         -- 🔴 PUT YOUR NEW VALUES HERE (Party, 'YYYY-MM-DD', New Value)
-        ('Green Party', '2026-05-01'::date, 17),
-        ('Labour', '2026-05-01'::date, 17),
-        ('Conservative', '2026-05-01'::date, 17),
-        ('Liberal Democrates', '2026-05-01'::date, 12),
-		('Reform UK', '2026-05-01'::date, 25),
-		('Restore Britian', '2026-05-01'::date, 3),
-		('Great Yarmouth First', '2026-05-01'::date, 3)
+        ('Green Party', '2016-05-05'::date, 4),
+        ('Labour', '2016-05-05'::date, 31),
+        ('Conservative', '2016-05-05'::date, 35),
+        ('Liberal Democrats', '2016-05-05'::date, 9)
+		--('Reform UK', '2018-12-06'::date, 6)
+		--('Restore Britian', '2025-05-01'::date, 0),
+		--('Great Yarmouth First', '2025-05-01'::date, 0)
         -- You can add as many rows here as you need, just separate them with commas
 ) AS sub(party_name, target_date, new_poll_value)
 JOIN candidates c ON c.registered_party = sub.party_name
