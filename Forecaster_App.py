@@ -11,7 +11,7 @@ import traceback
 from PySide6 import QtCore
 import PySide6.QtWidgets as QtWidgets
 from forecaster_Controllers import DashboardController
-from forecaster_forecast_service import (Forecaster_1, Forecast_Repository, ForecastService)
+from forecaster_forecast_service import (Forecast_2, Forecaster_1, Forecast_Repository, ForecastService)
 from forecaster_GUI import AnalysisScreen, DashboardScreen, DataScreen, ForecastScreen, MainWindow
 
 
@@ -21,10 +21,16 @@ class ForecastWorker(QtCore.QObject):
     finished = QtCore.Signal()
 
     @QtCore.Slot()
+    def __init__(self, compositional=False):
+        super().__init__()
+        self.compositional = compositional
+
+    @QtCore.Slot()
     def run(self) -> None:
         try:
             print("[FORECAST] Starting forecast worker...", flush=True)
-            forecaster = Forecaster_1(use_xgboost=False)
+            forecaster = Forecast_2() if self.compositional else Forecaster_1(use_xgboost=False)
+            forecaster.model_name = "Forecaster 2" if self.compositional else "Forecaster 1" # pyright: ignore[reportAttributeAccessIssue]
             repository = Forecast_Repository(load_map=False)
             print(
                 f"[FORECAST] Database backend: {type(repository.database).__name__}",
@@ -72,14 +78,34 @@ class ForecastApp:
 
         self.main_window = MainWindow(screen_widgets)
         self.main_window.showMaximized()
+        self.main_window.set_reforecast_callback(self._reforecast)
+        self.main_window.set_forecaster_label("Forecaster 1")
         screen_widgets["Dashboard"].set_forecast_loading(True)
         screen_widgets["Forecast"].set_forecast_loading(True)
+        self.main_window.set_reforecast_enabled(False)
         self._start_forecast_worker(screen_widgets["Dashboard"], screen_widgets["Forecast"])
         return self.app.exec()
 
-    def _start_forecast_worker(self, dashboard: DashboardScreen, forecast: ForecastScreen) -> None:
+    def _reforecast(self, model_name: str) -> None:
+        dashboard = self.main_window.screens["Dashboard"] # type: ignore
+        forecast = self.main_window.screens["Forecast"] # type: ignore
+        dashboard.set_forecast_loading(True)
+        forecast.set_forecast_loading(True)
+        self.main_window.set_reforecast_enabled(False) # type: ignore
+        self._start_forecast_worker(
+            dashboard,
+            forecast,
+            compositional=model_name == "Forecaster 2",
+        )
+
+    def _start_forecast_worker(
+        self,
+        dashboard: DashboardScreen,
+        forecast: ForecastScreen,
+        compositional=False,
+    ) -> None:
         self.forecast_thread = QtCore.QThread()
-        self.forecast_worker = ForecastWorker()
+        self.forecast_worker = ForecastWorker(compositional=compositional)
 
         self.forecast_worker.moveToThread(self.forecast_thread)
 
@@ -92,6 +118,12 @@ class ForecastApp:
             forecast.set_forecaster,
             QtCore.Qt.ConnectionType.QueuedConnection,
         )
+        self.forecast_worker.completed.connect(
+            lambda forecaster: self.main_window.set_forecaster_label( # type: ignore
+                getattr(forecaster, "model_name", "Forecaster 1")
+            ),
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
         self.forecast_worker.failed.connect(
             self._show_forecast_error,
             QtCore.Qt.ConnectionType.QueuedConnection,
@@ -100,12 +132,16 @@ class ForecastApp:
         self.forecast_worker.finished.connect(self.forecast_thread.quit)
         self.forecast_thread.finished.connect(self.forecast_worker.deleteLater)
         self.forecast_thread.finished.connect(self.forecast_thread.deleteLater)
+        self.forecast_thread.finished.connect(
+            lambda: self.main_window.set_reforecast_enabled(True) # type: ignore
+        )
 
         self.forecast_thread.start()
 
     def _show_forecast_error(self, message: str) -> None:
         self.main_window.screens["Dashboard"].set_forecast_loading(False) # type: ignore
         self.main_window.screens["Forecast"].set_forecast_loading(False) # type: ignore
+        self.main_window.set_reforecast_enabled(True) # type: ignore
         QtWidgets.QMessageBox.warning(
             self.main_window,
             "Forecast Unavailable",

@@ -20,6 +20,7 @@ from forecaster_data import MySQLDatabase, DataManager
 
 # Machine Learning framework dependencies
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split, GridSearchCV
@@ -403,6 +404,38 @@ class Forecaster_1(iMachineLearningInterface):
         result["division_code"] = result["wd_code"]
         return result[columns].sort_values(["council", "division"]).reset_index(drop=True)
 
+    def get_council_results(self, council_name: str) -> pd.DataFrame:
+        """Return current and forecast seat totals by party for one council."""
+        columns = ["party", "current_seats", "forecast_seats", "seats_gained"]
+        if self.future_data is None or self.future_data.empty:
+            return pd.DataFrame(columns=columns)
+
+        data = self.future_data.copy()
+        target = str(council_name).strip().casefold()
+        council_values = data["council_name"].fillna(data["cc_code"]).astype(str).str.strip()
+        data = data[council_values.str.casefold() == target].copy()
+        if data.empty:
+            return pd.DataFrame(columns=columns)
+
+        current_winners = data.loc[
+            data.groupby("wd_code")["party_vote_share"].idxmax(),
+            "party_label",
+        ].value_counts().rename("current_seats")
+        forecast_winners = data.loc[
+            data.groupby("wd_code")["final_forecast_share"].idxmax(),
+            "party_label",
+        ].value_counts().rename("forecast_seats")
+        result = pd.concat([current_winners, forecast_winners], axis=1).fillna(0)
+        result["current_seats"] = result["current_seats"].astype(int)
+        result["forecast_seats"] = result["forecast_seats"].astype(int)
+        result["seats_gained"] = result["forecast_seats"] - result["current_seats"]
+        return (
+            result.rename_axis("party")
+            .reset_index()
+            .sort_values(["forecast_seats", "party"], ascending=[False, True])
+            .reset_index(drop=True)
+        )
+
     def county_and_unitary_forecast(self) -> pd.DataFrame:
         """Return forecast rows for English county and unitary authorities only."""
         forecast_data = self.forecast()
@@ -560,8 +593,147 @@ class Forecaster_1(iMachineLearningInterface):
 #==============================================================================
 # Model 2: September 2026
 #==============================================================================
-class Forecast_2(iMachineLearningInterface):
-    pass
+class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
+    """Alternative compositional forecast model with ward shares summing to 100%."""
+
+    def __init__(self, base_estimator=None):
+        self.model = base_estimator if base_estimator is not None else (
+            XGBRegressor(
+                n_estimators=300,
+                max_depth=4,
+                learning_rate=0.03,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+            ) # type: ignore
+            if XGBOOST_AVAILABLE
+            else RandomForestRegressor(
+                n_estimators=150,
+                max_depth=12,
+                random_state=42,
+            )
+        )
+        self.df_raw = None
+        self.ward_name_map = {}
+        self.future_data = None
+        self.X_train_features = None
+        self.last_rmse = None
+        self.last_r2 = None
+        self.explainer = None
+        self.census_features = [
+            "pct_student",
+            "pct_own_hme",
+            "pct_rent",
+            "pct_age_18_29",
+            "pct_age_30_65",
+            "pct_age_over_65",
+            "pct_wk_class",
+            "pct_mid_class",
+            "pct_bch",
+            "pct_female",
+            "pct_male",
+            "ward_population_density",
+            "historical_party_ward_mean",
+            "candidate_personal_historical_mean",
+            "national_poll_share",
+            "top_2",
+            "left_right",
+            "wasted_vote",
+        ]
+
+    def prepare_data(self, raw_data: pd.DataFrame, ward_name_map: dict[str, str]) -> None:
+        super().prepare_data(raw_data, ward_name_map)
+        self.df_raw["party_label"] = self.df_raw["party_name"] # type: ignore
+
+    def train_model(self) -> None:
+        if self.df_raw is None:
+            raise RuntimeError("Data must be prepared via prepare_data() before training.")
+
+        historical_data = self.df_raw[self.df_raw["election_year"] < 2026].copy()
+        self.future_data = self.df_raw[self.df_raw["election_year"] == 2026].copy()
+        historical_data = historical_data.dropna(
+            subset=["party_vote_share"] + self.census_features
+        )
+
+        candidate_drops = [
+            "party_vote_share",
+            "election_year",
+            "wd_code",
+            "cc_code",
+            "candidate_id",
+            "candidate_name",
+            "party_name",
+            "council_name",
+            "party_label",
+        ]
+        columns_to_drop = [
+            column for column in candidate_drops if column in historical_data.columns
+        ]
+        X_train = historical_data.drop(columns=columns_to_drop).astype(float)
+        y_train = historical_data["party_vote_share"]
+        self.X_train_features = X_train
+        self.model.fit(X_train, y_train)
+        self.explainer = shap.TreeExplainer(self.model)
+
+        predictions = self.model.predict(X_train)
+        residuals = y_train - predictions
+        self.last_rmse = float(np.sqrt(np.mean(residuals ** 2)))
+        total_variance = np.sum((y_train - y_train.mean()) ** 2)
+        self.last_r2 = float(
+            1.0 - (np.sum(residuals ** 2) / total_variance)
+            if total_variance
+            else 0.0
+        )
+
+    def train_and_evaluate(self) -> None:
+        self.train_model()
+        self.predict()
+
+    def predict(self) -> pd.DataFrame:
+        if self.future_data is None or self.future_data.empty:
+            raise RuntimeError("No 2026 future data available for prediction.")
+
+        candidate_drops = [
+            "party_vote_share",
+            "election_year",
+            "wd_code",
+            "cc_code",
+            "candidate_id",
+            "candidate_name",
+            "party_name",
+            "council_name",
+            "party_label",
+        ]
+        columns_to_drop = [
+            column for column in candidate_drops if column in self.future_data.columns
+        ]
+        X_future = self.future_data.drop(columns=columns_to_drop).astype(float)
+        raw_predictions = self.model.predict(X_future)
+        self.future_data["predicted_party_share_unclipped"] = np.clip(
+            raw_predictions, 0.0, 100.0
+        )
+
+        normalized_chunks = []
+        for _, group in self.future_data.groupby("wd_code"): # type: ignore
+            group = group.copy()
+            total_share = group["predicted_party_share_unclipped"].sum()
+            if total_share > 0:
+                group["final_forecast_share"] = (
+                    group["predicted_party_share_unclipped"] / total_share * 100.0
+                )
+            else:
+                group["final_forecast_share"] = 100.0 / len(group)
+            normalized_chunks.append(group)
+
+        self.future_data = pd.concat(normalized_chunks, ignore_index=True)
+        return self.future_data
+
+    def forecast(self) -> pd.DataFrame:
+        if self.future_data is None:
+            return pd.DataFrame()
+        forecast_data = self.future_data.copy()
+        forecast_data["ward_name"] = forecast_data["wd_code"].map(self.ward_name_map)
+        return forecast_data
 #==============================================================================
 # Forecast Helper Functions
 #==============================================================================

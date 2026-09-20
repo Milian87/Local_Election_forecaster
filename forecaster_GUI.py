@@ -90,12 +90,35 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self.buttons[name] = button
 
+        self.model_selector = QtWidgets.QComboBox()
+        self.model_selector.addItem("Forecaster 1", "Forecaster 1")
+        self.model_selector.addItem("Forecaster 2", "Forecaster 2")
+        self.model_selector.setToolTip("Choose the forecast model")
+        layout.addWidget(self.model_selector)
+
+        self.reforecast_button = QtWidgets.QPushButton("Reforecast")
+        self.reforecast_button.setToolTip("Run the selected forecast model")
+        self.reforecast_button.setStyleSheet(blue_button_style)
+        layout.addWidget(self.reforecast_button)
+
         layout.addStretch()
         app = QtWidgets.QApplication.instance()
         if app is None:
             app = QtWidgets.QApplication(sys.argv)
         ButtonWidget(layout, "Exit", app.quit, button_style=red_button_style)
         return panel
+
+    def set_reforecast_callback(self, callback):
+        self.reforecast_button.clicked.connect(
+            lambda: callback(self.model_selector.currentData())
+        )
+
+    def set_reforecast_enabled(self, enabled: bool):
+        self.reforecast_button.setEnabled(enabled)
+        self.model_selector.setEnabled(enabled)
+
+    def set_forecaster_label(self, model_name: str):
+        self.forecaster_label.setText(f"Results: {model_name}")
 
     def create_header(self):
         layout = QtWidgets.QHBoxLayout()
@@ -122,7 +145,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         title_layout.addWidget(self.main_title)
         title_layout.addWidget(self.ui_title)
-        title_layout.addWidget(self.datetime_label)
+        status_layout = QtWidgets.QHBoxLayout()
+        status_layout.addWidget(self.datetime_label)
+        self.forecaster_label = QtWidgets.QLabel("Results: Forecaster 1")
+        self.forecaster_label.setFont(QtGui.QFont("Manrope", 14))
+        self.forecaster_label.setStyleSheet("font-size: 14px; color: #ffffff;")
+        status_layout.addWidget(self.forecaster_label)
+        status_layout.addStretch()
+        title_layout.addLayout(status_layout)
         layout.addLayout(title_layout)
         layout.addStretch()
 
@@ -392,13 +422,40 @@ class ForecastScreen(BaseScreen):
             return
         row = self._division_forecasts.iloc[row_index]
         if column_index == 0:
+            self.populate_council_results(row["council"])
             self.refresh_map(focus_council=row["council"])
         elif column_index == 1:
             self.populate_division_results(row["division_code"])
             self.refresh_map(focus_division=row["division_code"])
 
+    def populate_council_results(self, council_name: str) -> None:
+        results = self.controller.get_council_results(council_name) # type: ignore
+        self.ward_forecast_table.setHorizontalHeaderLabels(
+            ["Party", "Current Seats", "Forecast Seats", "Seats Gained"]
+        )
+        self.ward_forecast_table.setColumnCount(4)
+        self.ward_forecast_table.setRowCount(len(results))
+        for row_index, (_, row) in enumerate(results.iterrows()):
+            values = [
+                str(row["party"]),
+                str(int(row["current_seats"])),
+                str(int(row["forecast_seats"])),
+                f"{int(row['seats_gained']):+d}",
+            ]
+            for column_index, value in enumerate(values):
+                self.ward_forecast_table.setItem(
+                    row_index,
+                    column_index,
+                    QtWidgets.QTableWidgetItem(value),
+                )
+        self.ward_forecast_table.resizeColumnsToContents()
+
     def populate_division_results(self, division_code: str) -> None:
         results = self.controller.get_division_results(division_code) # type: ignore
+        self.ward_forecast_table.setHorizontalHeaderLabels(
+            ["Candidate", "Party", "Current Share", "Forecast Share"]
+        )
+        self.ward_forecast_table.setColumnCount(4)
         if results.empty:
             self.ward_forecast_table.setRowCount(0)
             return

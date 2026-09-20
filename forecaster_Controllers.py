@@ -37,6 +37,9 @@ class DashboardController:
             forecast_data["wd_code"].astype(str).str.strip() == str(division_code).strip()
         ].copy()
 
+    def get_council_results(self, council_name: str) -> pd.DataFrame:
+        return self.data_source.get_council_results(council_name)
+
     def get_county_and_unitary_forecast(self) -> pd.DataFrame:
         if hasattr(self.data_source, "county_and_unitary_forecast"):
             return self.data_source.county_and_unitary_forecast()
