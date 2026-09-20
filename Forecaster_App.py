@@ -21,23 +21,28 @@ class ForecastWorker(QtCore.QObject):
     finished = QtCore.Signal()
 
     @QtCore.Slot()
-    def __init__(self, compositional=False):
+    def __init__(self, compositional=False, target_year=2027):
         super().__init__()
         self.compositional = compositional
+        self.target_year = target_year
 
     @QtCore.Slot()
     def run(self) -> None:
         try:
             print("[FORECAST] Starting forecast worker...", flush=True)
-            forecaster = Forecast_2() if self.compositional else Forecaster_1(use_xgboost=False)
-            forecaster.model_name = "Forecaster 2" if self.compositional else "Forecaster 1" # pyright: ignore[reportAttributeAccessIssue]
+            forecaster = (
+                Forecast_2(target_year=self.target_year)
+                if self.compositional
+                else Forecaster_1(use_xgboost=False, target_year=self.target_year)
+            )
+            forecaster.model_name = "Softmax Model" if self.compositional else "Delta Model" # pyright: ignore[reportAttributeAccessIssue]
             repository = Forecast_Repository(load_map=False)
             print(
                 f"[FORECAST] Database backend: {type(repository.database).__name__}",
                 flush=True,
             )
             print("[FORECAST] Loading election data...", flush=True)
-            forecast_data = ForecastService(forecaster, repository).run_forecast()
+            forecast_data = ForecastService(forecaster, repository).run_forecast(self.target_year)
             print(f"[FORECAST] Generated {len(forecast_data):,} forecast rows.", flush=True)
             saved_boundaries = repository.save_forecast_to_postgis(forecast_data)
             print(f"[FORECAST] Saved {saved_boundaries:,} divisions to PostGIS.", flush=True)
@@ -79,14 +84,14 @@ class ForecastApp:
         self.main_window = MainWindow(screen_widgets)
         self.main_window.showMaximized()
         self.main_window.set_reforecast_callback(self._reforecast)
-        self.main_window.set_forecaster_label("Forecaster 1")
+        self.main_window.set_forecaster_label("Delta Model - Tomorrow")
         screen_widgets["Dashboard"].set_forecast_loading(True)
         screen_widgets["Forecast"].set_forecast_loading(True)
         self.main_window.set_reforecast_enabled(False)
         self._start_forecast_worker(screen_widgets["Dashboard"], screen_widgets["Forecast"])
         return self.app.exec()
 
-    def _reforecast(self, model_name: str) -> None:
+    def _reforecast(self, model_name: str, target_year: int, target_label: str) -> None:
         dashboard = self.main_window.screens["Dashboard"] # type: ignore
         forecast = self.main_window.screens["Forecast"] # type: ignore
         dashboard.set_forecast_loading(True)
@@ -95,7 +100,9 @@ class ForecastApp:
         self._start_forecast_worker(
             dashboard,
             forecast,
-            compositional=model_name == "Forecaster 2",
+            compositional=model_name == "Softmax Model",
+            target_year=target_year,
+            target_label=target_label,
         )
 
     def _start_forecast_worker(
@@ -103,9 +110,14 @@ class ForecastApp:
         dashboard: DashboardScreen,
         forecast: ForecastScreen,
         compositional=False,
+        target_year=2027,
+        target_label="Tomorrow",
     ) -> None:
         self.forecast_thread = QtCore.QThread()
-        self.forecast_worker = ForecastWorker(compositional=compositional)
+        self.forecast_worker = ForecastWorker(
+            compositional=compositional,
+            target_year=target_year,
+        )
 
         self.forecast_worker.moveToThread(self.forecast_thread)
 
@@ -120,7 +132,8 @@ class ForecastApp:
         )
         self.forecast_worker.completed.connect(
             lambda forecaster: self.main_window.set_forecaster_label( # type: ignore
-                getattr(forecaster, "model_name", "Forecaster 1")
+                getattr(forecaster, "model_name", "Delta Model")
+                + f" - {target_label}"
             ),
             QtCore.Qt.ConnectionType.QueuedConnection,
         )

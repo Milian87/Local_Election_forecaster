@@ -18,6 +18,16 @@ The desktop app entrypoint is [irp_computer_program.py](irp_computer_program.py)
 
 The repository intentionally ignores local data files, generated logs, and virtual environments. The uploader supports an optional `PURGE_ON_RUN=true` switch for clearing the staging tables before loading.
 
+## Forecast Models
+
+### Delta Model
+
+The Delta Model predicts the change in each party's vote share from its historical baseline. It combines electoral history, demographic features, polling information, and tactical voting features, then applies the predicted change to the baseline share. Its design originated in Ian Milburn's MSc dissertation at the University of York in 2026.
+
+### Softmax Model
+
+The Softmax Model predicts an unconstrained support score for each party or candidate in a division, then normalizes the scores across that division so the forecasted vote shares sum to exactly 100%. This makes the model compositional and ensures that its division-level output is internally consistent.
+
 ### MySQL fallback
 
 The forecast application uses PostgreSQL by default. To fall back to the retained MySQL backend, set this before starting the app:

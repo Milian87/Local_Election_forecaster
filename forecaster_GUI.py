@@ -91,10 +91,26 @@ class MainWindow(QtWidgets.QMainWindow):
             self.buttons[name] = button
 
         self.model_selector = QtWidgets.QComboBox()
-        self.model_selector.addItem("Forecaster 1", "Forecaster 1")
-        self.model_selector.addItem("Forecaster 2", "Forecaster 2")
+        self.model_selector.addItem("Delta Model", "Delta Model")
+        self.model_selector.addItem("Softmax Model", "Softmax Model")
         self.model_selector.setToolTip("Choose the forecast model")
         layout.addWidget(self.model_selector)
+
+        self.date_selector = QtWidgets.QComboBox()
+        for label, year in (
+            ("2019 election", 2019),
+            ("2021 election", 2021),
+            ("2022 election", 2022),
+            ("2023 election", 2023),
+            ("2024 election", 2024),
+            ("2025 election", 2025),
+            ("7 May 2026", 2026),
+            ("Tomorrow", 2027),
+        ):
+            self.date_selector.addItem(label, year)
+        self.date_selector.setCurrentIndex(self.date_selector.count() - 1)
+        self.date_selector.setToolTip("Choose the election date to forecast or backtest")
+        layout.addWidget(self.date_selector)
 
         self.reforecast_button = QtWidgets.QPushButton("Reforecast")
         self.reforecast_button.setToolTip("Run the selected forecast model")
@@ -110,12 +126,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def set_reforecast_callback(self, callback):
         self.reforecast_button.clicked.connect(
-            lambda: callback(self.model_selector.currentData())
+            lambda: callback(
+                self.model_selector.currentData(),
+                self.date_selector.currentData(),
+                self.date_selector.currentText(),
+            )
         )
 
     def set_reforecast_enabled(self, enabled: bool):
         self.reforecast_button.setEnabled(enabled)
         self.model_selector.setEnabled(enabled)
+        self.date_selector.setEnabled(enabled)
 
     def set_forecaster_label(self, model_name: str):
         self.forecaster_label.setText(f"Results: {model_name}")
@@ -147,7 +168,7 @@ class MainWindow(QtWidgets.QMainWindow):
         title_layout.addWidget(self.ui_title)
         status_layout = QtWidgets.QHBoxLayout()
         status_layout.addWidget(self.datetime_label)
-        self.forecaster_label = QtWidgets.QLabel("Results: Forecaster 1")
+        self.forecaster_label = QtWidgets.QLabel("Results: Delta Model")
         self.forecaster_label.setFont(QtGui.QFont("Manrope", 14))
         self.forecaster_label.setStyleSheet("font-size: 14px; color: #ffffff;")
         status_layout.addWidget(self.forecaster_label)
@@ -378,6 +399,11 @@ class ForecastScreen(BaseScreen):
         self.level_combo_box = QtWidgets.QComboBox()
         self.level_combo_box.addItems(["District", "County & Unitary"])
         self.left_layout.addWidget(self.level_combo_box)
+        self.council_selector = QtWidgets.QComboBox()
+        self.council_selector.addItem("All councils", "")
+        self.council_selector.setToolTip("Filter divisions and focus the map by council")
+        self.council_selector.currentIndexChanged.connect(self._council_selection_changed)
+        self.left_layout.addWidget(self.council_selector)
         self.summary_table = TransparentTableWidget(
             ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
         )
@@ -396,10 +422,27 @@ class ForecastScreen(BaseScreen):
 
     def populate_tables(self):
         division_forecasts = self.controller.get_division_forecasts() # type: ignore
+        selected_council = self.council_selector.currentData()
+        self.council_selector.blockSignals(True)
+        self.council_selector.clear()
+        self.council_selector.addItem("All councils", "")
+        councils = sorted(
+            division_forecasts["council"].dropna().astype(str).str.strip().unique().tolist()
+        )
+        for council in councils:
+            self.council_selector.addItem(council, council)
+        selected_index = self.council_selector.findData(selected_council)
+        self.council_selector.setCurrentIndex(selected_index if selected_index >= 0 else 0)
+        self.council_selector.blockSignals(False)
+
+        if selected_council:
+            division_forecasts = division_forecasts[
+                division_forecasts["council"].astype(str).str.strip() == str(selected_council).strip()
+            ].copy()
+        self.summary_table.setColumnCount(5)
         self.summary_table.setHorizontalHeaderLabels(
             ["Council", "Division", "Current Councillor", "Incumbent Party", "Forecasted Party"]
         )
-        self.summary_table.setColumnCount(5)
         self.summary_table.setRowCount(len(division_forecasts))
         self.ward_forecast_table.setRowCount(0)
         for row_index, (_, row) in enumerate(division_forecasts.iterrows()):
@@ -416,6 +459,35 @@ class ForecastScreen(BaseScreen):
         self.summary_table.resizeColumnsToContents()
 
         self._division_forecasts = division_forecasts
+
+    def _council_selection_changed(self) -> None:
+        selected_council = self.council_selector.currentData()
+        all_divisions = self.controller.get_division_forecasts() # type: ignore
+        if selected_council:
+            filtered = all_divisions[
+                all_divisions["council"].astype(str).str.strip() == str(selected_council).strip()
+            ].copy()
+        else:
+            filtered = all_divisions
+
+        self._division_forecasts = filtered
+        self.summary_table.setRowCount(len(filtered))
+        for row_index, (_, row) in enumerate(filtered.iterrows()):
+            values = [
+                str(row["council"]),
+                str(row["division"]),
+                str(row["current_councillor"]),
+                str(row["incumbent_party"]),
+                str(row["forecasted_party"]),
+            ]
+            for column_index, value in enumerate(values):
+                self.summary_table.setItem(
+                    row_index,
+                    column_index,
+                    QtWidgets.QTableWidgetItem(value),
+                )
+        self.summary_table.resizeColumnsToContents()
+        self.refresh_map(focus_council=selected_council or None)
 
     def _focus_map_from_table(self, row_index: int, column_index: int) -> None:
         if not hasattr(self, "_division_forecasts") or row_index >= len(self._division_forecasts):

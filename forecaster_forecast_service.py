@@ -109,7 +109,7 @@ class Forecaster_1(iMachineLearningInterface):
     and engineers tactical metrics (top_2 margins, wasted_vote flags, left_right indexes)
     to model volatile electoral surge mechanics and voter coordination.
     """
-    def __init__(self, db_config=None, use_xgboost=True):
+    def __init__(self, db_config=None, use_xgboost=True, target_year=2027):
         self.database = MySQLDatabase(db_config)
         self.data_manager = DataManager(self.database)
         self.feature_engineer = None
@@ -168,12 +168,13 @@ class Forecaster_1(iMachineLearningInterface):
         # Populated by train_and_evaluate(); backs evaluate_model()
         self.last_rmse = None
         self.last_r2 = None
+        self.target_year = target_year
 
     def prepare_data(self, raw_data: pd.DataFrame, ward_name_map: dict[str, str]) -> None:
         """iMachineLearningInterface entry point: accept externally supplied data instead of querying internally."""
         self.df_raw = raw_data.copy()
         self.ward_name_map = dict(ward_name_map)
-        self.feature_engineer = FeatureEngineer(self.df_raw)
+        self.feature_engineer = FeatureEngineer(self.df_raw, target_year=self.target_year)
         self.feature_engineer.engineer_features()
         self.df_raw = self.feature_engineer.df_raw
 
@@ -493,8 +494,8 @@ class Forecaster_1(iMachineLearningInterface):
         self.df_raw['party_label'] = self.df_raw['party_name'] # type: ignore
         df_encoded = pd.get_dummies(self.df_raw, columns=['party_name'], drop_first=False) # type: ignore
 
-        historical_data = df_encoded[df_encoded['election_year'] < 2026].copy()
-        self.future_data = df_encoded[df_encoded['election_year'] == 2026].copy()
+        historical_data = df_encoded[df_encoded['election_year'] < self.target_year].copy()
+        self.future_data = df_encoded[df_encoded['election_year'] == self.target_year].copy()
 
         historical_data = historical_data.dropna(subset=['diff_vote_share'] + self.census_features)
         self.available_wards = sorted(self.future_data['wd_code'].unique())
@@ -594,9 +595,9 @@ class Forecaster_1(iMachineLearningInterface):
 # Model 2: September 2026
 #==============================================================================
 class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
-    """Alternative compositional forecast model with ward shares summing to 100%."""
+    """Softmax Model: compositional forecast with ward shares summing to 100%."""
 
-    def __init__(self, base_estimator=None):
+    def __init__(self, base_estimator=None, target_year=2027):
         self.model = base_estimator if base_estimator is not None else (
             XGBRegressor(
                 n_estimators=300,
@@ -620,6 +621,7 @@ class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
         self.last_rmse = None
         self.last_r2 = None
         self.explainer = None
+        self.target_year = target_year
         self.census_features = [
             "pct_student",
             "pct_own_hme",
@@ -649,8 +651,8 @@ class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
         if self.df_raw is None:
             raise RuntimeError("Data must be prepared via prepare_data() before training.")
 
-        historical_data = self.df_raw[self.df_raw["election_year"] < 2026].copy()
-        self.future_data = self.df_raw[self.df_raw["election_year"] == 2026].copy()
+        historical_data = self.df_raw[self.df_raw["election_year"] < self.target_year].copy()
+        self.future_data = self.df_raw[self.df_raw["election_year"] == self.target_year].copy()
         historical_data = historical_data.dropna(
             subset=["party_vote_share"] + self.census_features
         )
@@ -738,8 +740,9 @@ class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
 # Forecast Helper Functions
 #==============================================================================
 class FeatureEngineer():
-    def __init__(self, df_raw: pd.DataFrame):
+    def __init__(self, df_raw: pd.DataFrame, target_year: int = 2027):
         self.df_raw = df_raw.copy()
+        self.target_year = target_year
 
     def map_ideology(self, party_name):
         """Maps categorical party text to a continuous scale (-1.0 Left to +1.0 Right)."""
@@ -759,7 +762,7 @@ class FeatureEngineer():
         """Shared pandas preprocessing used by both extract_and_prepare_data() and prepare_data()."""
         print("Processing localized historical party baseline frameworks...")
         historical_averages = (
-            self.df_raw[self.df_raw['election_year'] < 2026] # pyright: ignore[reportOptionalSubscript]
+            self.df_raw[self.df_raw['election_year'] < self.target_year] # pyright: ignore[reportOptionalSubscript]
             .groupby(['wd_code', 'party_name'], group_keys=False)['party_vote_share']
             .mean().reset_index().rename(columns={'party_vote_share': 'historical_party_ward_mean'})
         )
@@ -1037,10 +1040,49 @@ class ForecastService:
         self.repository = repository
         self.map_orchestrator = repository.map_orchestrator
 
-    def run_forecast(self) -> pd.DataFrame:
-        """Loads inputs from the repository, then prepares/trains/predicts via the forecaster."""
+    @staticmethod
+    def _prepare_target_dataset(
+        raw_data: pd.DataFrame,
+        target_year: int,
+    ) -> pd.DataFrame:
+        years = sorted(pd.to_numeric(raw_data["election_year"], errors="coerce").dropna().astype(int).unique())
+        if not years:
+            raise ValueError("No dated election results are available for forecasting.")
+
+        raw_data = raw_data.copy()
+        raw_data["election_year"] = pd.to_numeric(raw_data["election_year"], errors="coerce").astype(int)
+        latest_year = years[-1]
+        if target_year <= latest_year:
+            target_rows = raw_data[raw_data["election_year"] == target_year].copy()
+            training_rows = raw_data[raw_data["election_year"] < target_year].copy()
+            if target_rows.empty:
+                raise ValueError(f"No election results are available for target year {target_year}.")
+            previous = (
+                training_rows.sort_values("election_year")
+                .drop_duplicates(["wd_code", "party_name"], keep="last")
+                [["wd_code", "party_name", "party_vote_share"]]
+                .rename(columns={"party_vote_share": "baseline_vote_share"})
+            )
+            target_rows = target_rows.drop(columns=["party_vote_share"]).merge(
+                previous, on=["wd_code", "party_name"], how="left"
+            )
+            target_rows["party_vote_share"] = target_rows["baseline_vote_share"].fillna(0.0)
+            target_rows = target_rows.drop(columns=["baseline_vote_share"])
+            target_rows["election_year"] = target_year
+            return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
+
+        training_rows = raw_data.copy()
+        target_rows = raw_data[raw_data["election_year"] == latest_year].copy()
+        target_rows["election_year"] = target_year
+        return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
+
+    def run_forecast(self, target_year: int | None = None) -> pd.DataFrame:
+        """Load data, create a leakage-safe target set, then train and forecast."""
         raw_data, ward_name_map = self.repository.load_election_data()
-        self.forecaster.prepare_data(raw_data, ward_name_map)
+        selected_year = target_year or getattr(self.forecaster, "target_year", 2027)
+        self.forecaster.target_year = selected_year
+        forecast_input = self._prepare_target_dataset(raw_data, selected_year)
+        self.forecaster.prepare_data(forecast_input, ward_name_map)
         self.forecaster.train_and_evaluate()
         return self.forecaster.forecast()
 
