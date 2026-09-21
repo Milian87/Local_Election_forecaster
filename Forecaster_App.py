@@ -33,25 +33,21 @@ class ForecastWorker(QtCore.QObject):
     def run(self) -> None:
         try:
             print("[FORECAST] Starting forecast worker...", flush=True)
-            forecaster = (
-                Forecaster_2(target_year=int(self.target_date[:4]))
-                if self.compositional
-                else Forecaster_1(use_xgboost=False, target_year=int(self.target_date[:4]))
-            )
-            forecaster.model_name = "Softmax Model" if self.compositional else "Delta Model" if self.compositional != "Hybrid Model" else "Hybrid Model" # pyright: ignore[reportAttributeAccessIssue]
+            target_year = int(self.target_date[:4])
+            if self.compositional == "Hybrid Model":
+                forecaster = Forecaster_3(target_year=target_year)
+                model_name = "Hybrid Model"
+            elif self.compositional in (True, "Softmax Model"):
+                forecaster = Forecaster_2(target_year=target_year)
+                model_name = "Softmax Model"
+            else:
+                forecaster = Forecaster_1(use_xgboost=False, target_year=target_year)
+                model_name = "Delta Model"
+            forecaster.model_name = model_name # pyright: ignore[reportAttributeAccessIssue]
             repository = Forecast_Repository(load_map=False)
             print(
                 f"[FORECAST] Database backend: {type(repository.database).__name__}",
                 flush=True,
-            )
-            forecaster = (
-                Forecaster_3(target_year=int(self.target_date[:4]))
-                if self.compositional == "Hybrid Model"
-                else (
-                    Forecaster_2(target_year=int(self.target_date[:4]))
-                    if self.compositional == "Softmax Model"
-                    else Forecaster_1(use_xgboost=False, target_year=int(self.target_date[:4]))
-                )
             )
             print("[FORECAST] Loading election data...", flush=True)
             forecast_data = ForecastService(forecaster, repository).run_forecast(self.target_date)
