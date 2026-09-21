@@ -351,6 +351,17 @@ class DashboardScreen(BaseScreen):
         self.forecast_loading_label.raise_()
 
 class ForecastScreen(BaseScreen):
+    incumbent_party_colors = {
+        "Reform UK": "#00c3d9",
+        "Liberal Democrats": "#FDBB30",
+        "Green Party": "#00a85a",
+        "Conservative": "#0087dc",
+        "Labour": "#d50000",
+        "Independent": "#F598E5",
+        "Great Yarmouth First": "#000080",
+        "Restore Britain": "#000080",
+    }
+
     def __init__(self, controller=None, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -457,7 +468,7 @@ class ForecastScreen(BaseScreen):
             ].copy()
         self.summary_table.setColumnCount(5)
         self.summary_table.setHorizontalHeaderLabels(
-            ["Council", "Division", "Current Councillor", "Incumbent Party", "Forecasted Party"]
+            ["Council", "Division", "Current Councillor", "", "Forecasted Party"]
         )
         self.summary_table.setRowCount(len(division_forecasts))
         self.ward_forecast_table.setRowCount(0)
@@ -466,11 +477,19 @@ class ForecastScreen(BaseScreen):
                 str(row["council"]),
                 str(row["division"]),
                 str(row["current_councillor"]),
-                str(row["incumbent_party"]),
+                "",
                 str(row["forecasted_party"]),
             ]
             for column_index, value in enumerate(values):
-                self.summary_table.setItem(row_index, column_index, QtWidgets.QTableWidgetItem(value))
+                item = QtWidgets.QTableWidgetItem(value)
+                if column_index == 3:
+                    party = str(row["incumbent_party"])
+                    color = QtGui.QColor(self.incumbent_party_colors.get(party, "#bdbdbd"))
+                    item.setText("      ")
+                    item.setBackground(QtGui.QBrush(color))
+                    item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                    item.setToolTip(party)
+                self.summary_table.setItem(row_index, column_index, item)
 
         self.summary_table.resizeColumnsToContents()
 
@@ -493,15 +512,19 @@ class ForecastScreen(BaseScreen):
                 str(row["council"]),
                 str(row["division"]),
                 str(row["current_councillor"]),
-                str(row["incumbent_party"]),
+                "",
                 str(row["forecasted_party"]),
             ]
             for column_index, value in enumerate(values):
-                self.summary_table.setItem(
-                    row_index,
-                    column_index,
-                    QtWidgets.QTableWidgetItem(value),
-                )
+                item = QtWidgets.QTableWidgetItem(value)
+                if column_index == 3:
+                    party = str(row["incumbent_party"])
+                    color = QtGui.QColor(self.incumbent_party_colors.get(party, "#bdbdbd"))
+                    item.setText("      ")
+                    item.setBackground(QtGui.QBrush(color))
+                    item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                    item.setToolTip(party)
+                self.summary_table.setItem(row_index, column_index, item)
         self.summary_table.resizeColumnsToContents()
         self.refresh_map(focus_council=selected_council or None)
 

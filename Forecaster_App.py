@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6 import QtCore
 import PySide6.QtWidgets as QtWidgets
 from forecaster_Controllers import DashboardController
-from forecaster_forecast_service import (Forecast_2, Forecaster_1, Forecast_Repository, ForecastService)
+from forecaster_forecast_service import (Forecaster_1, Forecaster_2, Forecast_Repository, ForecastService)
 from forecaster_GUI import AnalysisScreen, DashboardScreen, DataScreen, ForecastScreen, MainWindow
 
 
@@ -34,7 +34,7 @@ class ForecastWorker(QtCore.QObject):
         try:
             print("[FORECAST] Starting forecast worker...", flush=True)
             forecaster = (
-                Forecast_2(target_year=int(self.target_date[:4]))
+                Forecaster_2(target_year=int(self.target_date[:4]))
                 if self.compositional
                 else Forecaster_1(use_xgboost=False, target_year=int(self.target_date[:4]))
             )

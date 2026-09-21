@@ -27,6 +27,9 @@ class Data_Uploader_Interface(ABC):
         pass
 
 class iMachineLearningInterface(ABC):
+    target_date: str
+    target_year: int
+
     @abstractmethod
     def prepare_data(
         self,

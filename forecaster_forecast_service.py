@@ -100,9 +100,9 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
     )
     ward_name_map = dict(zip(df_wards['wd_code'], df_wards['ward_name']))
     return df_raw, ward_name_map
-#==============================================================================
-# Model 1: May - August 2026 Local Election Forecast dissertation
-#==============================================================================
+#==================================================================================
+# Model 1: May - August 2026 Local Election Forecast dissertation (The Delta Model)
+#==================================================================================
 class Forecaster_1(iMachineLearningInterface):
     """
     Advanced predictive engine that transforms targets to change-in-share (Δ)
@@ -593,9 +593,9 @@ class Forecaster_1(iMachineLearningInterface):
         print(f"Saved forecast results to: {destination}")
         return destination
 #==============================================================================
-# Model 2: September 2026
+# Model 2: September 2026 (The Softmax Model)
 #==============================================================================
-class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
+class Forecaster_2(iMachineLearningInterface, BaseEstimator, RegressorMixin):
     """Softmax Model: compositional forecast with ward shares summing to 100%."""
 
     def __init__(self, base_estimator=None, target_year=2027):
@@ -646,7 +646,11 @@ class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
         ]
 
     def prepare_data(self, raw_data: pd.DataFrame, ward_name_map: dict[str, str]) -> None:
-        super().prepare_data(raw_data, ward_name_map)
+        self.df_raw = raw_data.copy()
+        self.ward_name_map = dict(ward_name_map)
+        feature_engineer = FeatureEngineer(self.df_raw, target_year=self.target_year)
+        feature_engineer.engineer_features()
+        self.df_raw = feature_engineer.df_raw
         self.df_raw["party_label"] = self.df_raw["party_name"] # type: ignore
 
     def train_model(self) -> None:
@@ -738,6 +742,38 @@ class Forecast_2(Forecaster_1, BaseEstimator, RegressorMixin):
         forecast_data = self.future_data.copy()
         forecast_data["ward_name"] = forecast_data["wd_code"].map(self.ward_name_map)
         return forecast_data
+
+    def get_summary(self, cc_code=None) -> pd.DataFrame:
+        return Forecaster_1.get_summary(self, cc_code=cc_code)
+
+    def get_council_summaries(self) -> pd.DataFrame:
+        return Forecaster_1.get_council_summaries(self)
+
+    def get_division_forecasts(self) -> pd.DataFrame:
+        return Forecaster_1.get_division_forecasts(self)
+
+    def get_council_results(self, council_name: str) -> pd.DataFrame:
+        return Forecaster_1.get_council_results(self, council_name)
+
+    def county_and_unitary_forecast(self) -> pd.DataFrame:
+        forecast_data = self.forecast()
+        authority_mask = forecast_data["cc_code"].astype(str).str.startswith(("E06", "E10"), na=False)
+        return forecast_data[authority_mask].copy()
+
+    def save_forecast_to_csv(self, output_path: str = "election_forecast_results.csv") -> Path:
+        if self.future_data is None or self.future_data.empty:
+            raise RuntimeError("No forecast data available. Run train_and_evaluate() first.")
+        destination = Path(output_path)
+        if not destination.is_absolute():
+            destination = Path(__file__).parent / destination
+        self.forecast().to_csv(destination, index=False)
+        print(f"Saved forecast results to: {destination}")
+        return destination
+#==================================================================================
+# Model 3: September 2026 (The hybrid Model)
+class Forecaster_3(iMachineLearningInterface):
+    pass
+
 #==============================================================================
 # Forecast Helper Functions
 #==============================================================================
@@ -1041,7 +1077,7 @@ class Forecast_Repository:
 
 class ForecastService:
     """Coordinator: pulls data from the repository and drives the forecaster's ML lifecycle."""
-    def __init__(self, forecaster: Forecaster_1, repository: Forecast_Repository):
+    def __init__(self, forecaster: iMachineLearningInterface, repository: Forecast_Repository):
         self.forecaster = forecaster
         self.repository = repository
         self.map_orchestrator = repository.map_orchestrator
