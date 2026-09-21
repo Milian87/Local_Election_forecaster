@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6 import QtCore
 import PySide6.QtWidgets as QtWidgets
 from forecaster_Controllers import DashboardController
-from forecaster_forecast_service import (Forecaster_1, Forecaster_2, Forecast_Repository, ForecastService)
+from forecaster_forecast_service import (Forecaster_1, Forecaster_2, Forecaster_3, Forecast_Repository, ForecastService)
 from forecaster_GUI import AnalysisScreen, DashboardScreen, DataScreen, ForecastScreen, MainWindow
 
 
@@ -38,11 +38,20 @@ class ForecastWorker(QtCore.QObject):
                 if self.compositional
                 else Forecaster_1(use_xgboost=False, target_year=int(self.target_date[:4]))
             )
-            forecaster.model_name = "Softmax Model" if self.compositional else "Delta Model" # pyright: ignore[reportAttributeAccessIssue]
+            forecaster.model_name = "Softmax Model" if self.compositional else "Delta Model" if self.compositional != "Hybrid Model" else "Hybrid Model" # pyright: ignore[reportAttributeAccessIssue]
             repository = Forecast_Repository(load_map=False)
             print(
                 f"[FORECAST] Database backend: {type(repository.database).__name__}",
                 flush=True,
+            )
+            forecaster = (
+                Forecaster_3(target_year=int(self.target_date[:4]))
+                if self.compositional == "Hybrid Model"
+                else (
+                    Forecaster_2(target_year=int(self.target_date[:4]))
+                    if self.compositional == "Softmax Model"
+                    else Forecaster_1(use_xgboost=False, target_year=int(self.target_date[:4]))
+                )
             )
             print("[FORECAST] Loading election data...", flush=True)
             forecast_data = ForecastService(forecaster, repository).run_forecast(self.target_date)

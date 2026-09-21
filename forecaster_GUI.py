@@ -93,6 +93,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_selector = QtWidgets.QComboBox()
         self.model_selector.addItem("Delta Model", "Delta Model")
         self.model_selector.addItem("Softmax Model", "Softmax Model")
+        self.model_selector.addItem("Hybrid Model", "Hybrid Model")
         self.model_selector.setToolTip("Choose the forecast model")
         layout.addWidget(self.model_selector)
 

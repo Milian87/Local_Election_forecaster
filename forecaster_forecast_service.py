@@ -744,16 +744,16 @@ class Forecaster_2(iMachineLearningInterface, BaseEstimator, RegressorMixin):
         return forecast_data
 
     def get_summary(self, cc_code=None) -> pd.DataFrame:
-        return Forecaster_1.get_summary(self, cc_code=cc_code)
+        return Forecaster_1.get_summary(self, cc_code=cc_code) # type: ignore
 
     def get_council_summaries(self) -> pd.DataFrame:
-        return Forecaster_1.get_council_summaries(self)
+        return Forecaster_1.get_council_summaries(self) # type: ignore
 
     def get_division_forecasts(self) -> pd.DataFrame:
-        return Forecaster_1.get_division_forecasts(self)
+        return Forecaster_1.get_division_forecasts(self) # type: ignore
 
     def get_council_results(self, council_name: str) -> pd.DataFrame:
-        return Forecaster_1.get_council_results(self, council_name)
+        return Forecaster_1.get_council_results(self, council_name) # type: ignore
 
     def county_and_unitary_forecast(self) -> pd.DataFrame:
         forecast_data = self.forecast()
@@ -769,10 +769,210 @@ class Forecaster_2(iMachineLearningInterface, BaseEstimator, RegressorMixin):
         self.forecast().to_csv(destination, index=False)
         print(f"Saved forecast results to: {destination}")
         return destination
-#==================================================================================
-# Model 3: September 2026 (The hybrid Model)
-class Forecaster_3(iMachineLearningInterface):
-    pass
+#==============================================================================
+# Model 3: September 2026 (The Hybrid Model - Delta + Softmax Normalization)
+#==============================================================================
+class Forecaster_3(iMachineLearningInterface, BaseEstimator, RegressorMixin):
+    """
+    Hybrid Model: Combines the dynamic surge-swing prediction of the Delta model
+    with the strict sum-to-100% compositional normalization of the Softmax model.
+    """
+
+    def __init__(self, base_estimator=None, target_year=2027):
+        self.model = base_estimator if base_estimator is not None else (
+            XGBRegressor(
+                n_estimators=300,
+                max_depth=4,
+                learning_rate=0.03,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+            ) # type: ignore
+            if XGBOOST_AVAILABLE
+            else RandomForestRegressor(
+                n_estimators=150,
+                max_depth=12,
+                random_state=42,
+            )
+        )
+        self.df_raw = None
+        self.ward_name_map = {}
+        self.future_data = None
+        self.X_train_features = None
+        self.last_rmse = None
+        self.last_r2 = None
+        self.explainer = None
+        self.target_year = target_year
+        self.target_date = f"{target_year}-01-01"
+        self.model_name = "Hybrid Model"
+        
+        # Calibrated bounding limits & shrinkage metrics
+        self.lower_bound = -23.0
+        self.upper_bound = 15.0
+        self.delta_shrink_factor = 0.85
+
+        self.census_features = [
+            "pct_student",
+            "pct_own_hme",
+            "pct_rent",
+            "pct_age_18_29",
+            "pct_age_30_65",
+            "pct_age_over_65",
+            "pct_wk_class",
+            "pct_mid_class",
+            "pct_bch",
+            "pct_female",
+            "pct_male",
+            "ward_population_density",
+            "historical_party_ward_mean",
+            "candidate_personal_historical_mean",
+            "national_poll_share",
+            "top_2",
+            "left_right",
+            "wasted_vote",
+        ]
+
+    def prepare_data(self, raw_data: pd.DataFrame, ward_name_map: dict[str, str]) -> None:
+        self.df_raw = raw_data.copy()
+        self.ward_name_map = dict(ward_name_map)
+        feature_engineer = FeatureEngineer(self.df_raw, target_year=self.target_year)
+        feature_engineer.engineer_features()
+        self.df_raw = feature_engineer.df_raw
+        self.df_raw["party_label"] = self.df_raw["party_name"] # type: ignore
+
+    def train_model(self) -> None:
+        if self.df_raw is None:
+            raise RuntimeError("Data must be prepared via prepare_data() before training.")
+
+        historical_data = self.df_raw[self.df_raw["election_year"] < self.target_year].copy()
+        self.future_data = self.df_raw[self.df_raw["election_year"] == self.target_year].copy()
+        historical_data = historical_data.dropna(
+            subset=["diff_vote_share"] + self.census_features
+        )
+
+        candidate_drops = [
+            "party_vote_share",
+            "prior_vote_share",
+            "current_ward_rank",
+            "prior_ward_rank",
+            "diff_vote_share",
+            "election_date",
+            "wd_code",
+            "cc_code",
+            "candidate_id",
+            "candidate_name",
+            "party_name",
+            "council_name",
+            "party_label",
+        ]
+        columns_to_drop = [
+            column for column in candidate_drops if column in historical_data.columns
+        ]
+        X_train = historical_data.drop(columns=columns_to_drop).astype(float)
+        y_train = historical_data["diff_vote_share"]
+        self.X_train_features = X_train
+        self.model.fit(X_train, y_train)
+        self.explainer = shap.TreeExplainer(self.model)
+
+        predictions = self.model.predict(X_train)
+        residuals = y_train - predictions
+        self.last_rmse = float(np.sqrt(np.mean(residuals ** 2)))
+        total_variance = np.sum((y_train - y_train.mean()) ** 2)
+        self.last_r2 = float(
+            1.0 - (np.sum(residuals ** 2) / total_variance)
+            if total_variance
+            else 0.0
+        )
+
+    def train_and_evaluate(self) -> None:
+        self.train_model()
+        self.predict()
+
+    def predict(self) -> pd.DataFrame:
+        if self.future_data is None or self.future_data.empty:
+            raise RuntimeError("No future data available for prediction.")
+
+        candidate_drops = [
+            "party_vote_share",
+            "prior_vote_share",
+            "current_ward_rank",
+            "prior_ward_rank",
+            "diff_vote_share",
+            "election_date",
+            "wd_code",
+            "cc_code",
+            "candidate_id",
+            "candidate_name",
+            "party_name",
+            "council_name",
+            "party_label",
+        ]
+        columns_to_drop = [
+            column for column in candidate_drops if column in self.future_data.columns
+        ]
+        X_future = self.future_data.drop(columns=columns_to_drop).astype(float)
+        
+        # Stage 1: Predict swing delta, bound, shrink, and add to baseline
+        raw_deltas = self.model.predict(X_future)
+        bounded_deltas = np.clip(raw_deltas, self.lower_bound, self.upper_bound)
+        adjusted_deltas = bounded_deltas * self.delta_shrink_factor
+        
+        self.future_data["predicted_delta_adjusted"] = adjusted_deltas
+        self.future_data["predicted_party_share_unclipped"] = (
+            self.future_data["party_vote_share"] + self.future_data["predicted_delta_adjusted"]
+        )
+        unclipped_shares = np.clip(self.future_data["predicted_party_share_unclipped"], 0.0, 100.0)
+        self.future_data["predicted_party_share"] = unclipped_shares
+
+        # Stage 2: Compositional Normalization (Softmax / Sum-to-100% constraint per ward)
+        normalized_chunks = []
+        for _, group in self.future_data.groupby("wd_code"): # type: ignore
+            group = group.copy()
+            total_share = group["predicted_party_share"].sum()
+            if total_share > 0:
+                group["final_forecast_share"] = (
+                    group["predicted_party_share"] / total_share * 100.0
+                )
+            else:
+                group["final_forecast_share"] = 100.0 / len(group)
+            normalized_chunks.append(group)
+
+        self.future_data = pd.concat(normalized_chunks, ignore_index=True)
+        return self.future_data
+
+    def forecast(self) -> pd.DataFrame:
+        if self.future_data is None:
+            return pd.DataFrame()
+        forecast_data = self.future_data.copy()
+        forecast_data["ward_name"] = forecast_data["wd_code"].map(self.ward_name_map)
+        return forecast_data
+
+    def get_summary(self, cc_code=None) -> pd.DataFrame:
+        return Forecaster_1.get_summary(self, cc_code=cc_code) # type: ignore
+
+    def get_council_summaries(self) -> pd.DataFrame:
+        return Forecaster_1.get_council_summaries(self) # type: ignore
+
+    def get_division_forecasts(self) -> pd.DataFrame:
+        return Forecaster_1.get_division_forecasts(self) # type: ignore
+
+    def get_council_results(self, council_name: str) -> pd.DataFrame:
+        return Forecaster_1.get_council_results(self, council_name) # type: ignore
+
+    def county_and_unitary_forecast(self) -> pd.DataFrame:
+        forecast_data = self.forecast()
+        authority_mask = forecast_data["cc_code"].astype(str).str.startswith(("E06", "E10"), na=False)
+        return forecast_data[authority_mask].copy()
+
+    def save_forecast_to_csv(self, output_path: str = "election_forecast_results.csv") -> Path:
+        if self.future_data is None or self.future_data.empty:
+            raise RuntimeError("No forecast data available. Run train_and_evaluate() first.")
+        destination = Path(output_path)
+        if not destination.is_absolute():
+            destination = Path(__file__).parent / destination
+        self.forecast().to_csv(destination, index=False)
+        print(f"Saved forecast results to: {destination}")
+        return destination
 
 #==============================================================================
 # Forecast Helper Functions
