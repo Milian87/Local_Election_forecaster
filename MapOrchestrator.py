@@ -15,7 +15,8 @@ class MapOrchestrator:
         self.gdf = gpd.read_file(self.base_path)
         if self.gdf.crs is not None:
             self.gdf = self.gdf.to_crs(epsg=4326)
-        self.gdf = self._apply_local_2026_overrides(self.gdf)
+        # Use the selected official boundary file directly; proposed local overlays
+        # are intentionally not applied to the production map.
         # Define high-contrast hexagonal color codes for the 2026 seat map viewports
         self.party_colors = {
             'Reform UK': '#00c3d9',

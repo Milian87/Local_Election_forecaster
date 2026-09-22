@@ -164,7 +164,7 @@ class CouncilMapOrchestrator(BaseMapOrchestrator):
     def generate(self, forecast_df):
         gdf = self.load_geodata()
         division_code_column = next(
-            (column for column in ("CED25CD", "CED26CD") if column in gdf.columns),
+            (column for column in ("CED26CD", "CED25CD") if column in gdf.columns),
             None,
         )
         if division_code_column and not any(
@@ -191,18 +191,24 @@ class CouncilMapOrchestrator(BaseMapOrchestrator):
         gdf = self._attach_forecast_winners(
             gdf,
             forecast_df,
-            ("WD25CD", "WD25NM", "CED25CD", "CED25NM"),
+            ("WD26CD", "WD26NM", "WD25CD", "WD25NM", "CED25CD", "CED25NM"),
         )
         county_name_column = next(
-            (column for column in ("CTY25NM", "CTY26NM") if column in gdf.columns),
+            (column for column in ("CTY26NM", "CTY25NM") if column in gdf.columns),
             None,
         )
         unitary_name_column = next(
-            (column for column in ("LAD25NM", "LAD26NM") if column in gdf.columns),
+            (column for column in ("LAD26NM", "LAD25NM") if column in gdf.columns),
             None,
         )
         if county_name_column is None and unitary_name_column is None:
-            raise ValueError("Council map data needs a LAD25CD, LAD25NM, CTY25CD, or CTY25NM column")
+            return self._render_map(
+                gdf,
+                tooltip_fields=[division_code_column, "winner", "forecast_share"],
+                tooltip_aliases=["Division:", "Projected Winner:", "Vote Share:"],
+                fill_opacity=0.45,
+                edge_weight=1.0,
+            )
 
         gdf["__council_name"] = (
             gdf[county_name_column].replace("", pd.NA).fillna(gdf[unitary_name_column])
@@ -235,10 +241,10 @@ class WardMapOrchestrator(BaseMapOrchestrator):
         gdf = self._attach_forecast_winners(
             gdf,
             forecast_df,
-            ("WD25CD", "WD25NM", "CED25CD", "CED25NM"),
+            ("WD26CD", "WD26NM", "WD25CD", "WD25NM", "CED25CD", "CED25NM"),
         )
         ward_name_column = next(
-            (column for column in ("WD25NM", "CED25NM", "NAME") if column in gdf.columns),
+            (column for column in ("WD26NM", "WD25NM", "CED25NM", "NAME") if column in gdf.columns),
             None,
         )
         if ward_name_column is None:
@@ -248,7 +254,7 @@ class WardMapOrchestrator(BaseMapOrchestrator):
         if focus_division:
             division_code = str(focus_division).strip().upper()
             division_columns = [
-                column for column in ("WD25CD", "CED25CD") if column in gdf.columns
+                column for column in ("WD26CD", "WD25CD", "CED25CD") if column in gdf.columns
             ]
             focus_geometry = gdf[
                 gdf[division_columns].astype(str).apply(

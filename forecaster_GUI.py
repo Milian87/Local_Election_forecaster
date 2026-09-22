@@ -267,7 +267,9 @@ class DashboardScreen(BaseScreen):
 
         # add a combo box for selecting level of council (district, county)
         self.level_combo_box = QtWidgets.QComboBox()
-        self.level_combo_box.addItems(["District", "County & Unitary"])
+        self.level_combo_box.addItems(["District / Unitary", "County"])
+        self.level_combo_box.setCurrentText("County")
+        self.level_combo_box.currentIndexChanged.connect(lambda: self.refresh_map())
         self.left_layout.addWidget(self.level_combo_box)
         self.summary_table = TransparentTableWidget(
             ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
@@ -334,16 +336,26 @@ class DashboardScreen(BaseScreen):
             self.right_layout.removeWidget(self.map_view)
             self.map_view.deleteLater()
 
-        boundary_path = (
-            Path(__file__).parent
-            / "data"
-            / "County Electoral Division (May 2025) Boundaries EN BFE"
-            / "CED_MAY_2025_EN_BFC.shp"
-        )
+        if self.level_combo_box.currentText() == "District / Unitary":
+            boundary_path = (
+                Path(__file__).parent
+                / "data"
+                / "Borough and District Boundaries 2025"
+                / "WD_MAY_2026_UK_BFC.shp"
+            )
+            forecast_data = self.controller.get_forecast_data()
+        else:
+            boundary_path = (
+                Path(__file__).parent
+                / "data"
+                / "boundaries_2026"
+                / "CED_MAY_2026_EN_BFC.shp"
+            )
+            forecast_data = self.controller.get_county_and_unitary_forecast()
         try:
             self.map_orchestrator = map_orchestrator.CouncilMapOrchestrator(str(boundary_path))
             self.map_view = self.map_orchestrator.generate(
-                self.controller.get_county_and_unitary_forecast()
+                forecast_data
             )
         except (OSError, ValueError, ImportError) as error:
             self.map_view = QtWidgets.QLabel(f"Map unavailable: {error}")
@@ -425,7 +437,9 @@ class ForecastScreen(BaseScreen):
 
         # add a combo box for selecting level of council (district, county)
         self.level_combo_box = QtWidgets.QComboBox()
-        self.level_combo_box.addItems(["District", "County & Unitary"])
+        self.level_combo_box.addItems(["District / Unitary", "County"])
+        self.level_combo_box.setCurrentText("County")
+        self.level_combo_box.currentIndexChanged.connect(self._level_selection_changed)
         self.left_layout.addWidget(self.level_combo_box)
         self.council_selector = QtWidgets.QComboBox()
         self.council_selector.addItem("All councils", "")
@@ -529,6 +543,10 @@ class ForecastScreen(BaseScreen):
         self.summary_table.resizeColumnsToContents()
         self.refresh_map(focus_council=selected_council or None)
 
+    def _level_selection_changed(self) -> None:
+        self.populate_tables()
+        self.refresh_map()
+
     def _focus_map_from_table(self, row_index: int, column_index: int) -> None:
         if not hasattr(self, "_division_forecasts") or row_index >= len(self._division_forecasts):
             return
@@ -614,16 +632,26 @@ class ForecastScreen(BaseScreen):
         self.forecast_loading_label.raise_()
         QtWidgets.QApplication.processEvents()
 
-        boundary_path = (
-            Path(__file__).parent
-            / "data"
-            / "County Electoral Division (May 2025) Boundaries EN BFE"
-            / "CED_MAY_2025_EN_BFC.shp"
-        )
+        if self.level_combo_box.currentText() == "District / Unitary":
+            boundary_path = (
+                Path(__file__).parent
+                / "data"
+                / "Borough and District Boundaries 2025"
+                / "WD_MAY_2026_UK_BFC.shp"
+            )
+            forecast_data = self.controller.get_forecast_data() # type: ignore
+        else:
+            boundary_path = (
+                Path(__file__).parent
+                / "data"
+                / "boundaries_2026"
+                / "CED_MAY_2026_EN_BFC.shp"
+            )
+            forecast_data = self.controller.get_county_and_unitary_forecast() # type: ignore
         try:
             self.map_orchestrator = map_orchestrator.WardMapOrchestrator(str(boundary_path))
             self.map_view = self.map_orchestrator.generate(
-                self.controller.get_county_and_unitary_forecast(), # type: ignore
+                forecast_data,
                 focus_division=focus_division,
                 focus_council=focus_council,
             )
