@@ -23,11 +23,13 @@ class ForecastWorker(QtCore.QObject):
     finished = QtCore.Signal()
 
     @QtCore.Slot()
-    def __init__(self, compositional=False, target_date="2026-09-21", target_label="Tomorrow"):
+    def __init__(self, compositional=False, target_date="2026-09-21", target_label="Tomorrow", user_polls=None, ignore_user_polls=True):
         super().__init__()
         self.compositional = compositional
         self.target_date = target_date
         self.target_label = target_label
+        self.user_polls = user_polls or {}
+        self.ignore_user_polls = ignore_user_polls
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -50,7 +52,10 @@ class ForecastWorker(QtCore.QObject):
                 flush=True,
             )
             print("[FORECAST] Loading election data...", flush=True)
-            forecast_data = ForecastService(forecaster, repository).run_forecast(self.target_date)
+            active_polls = {} if self.ignore_user_polls else self.user_polls
+            forecast_data = ForecastService(forecaster, repository).run_forecast(
+                self.target_date, user_polls=active_polls
+            )
             print(f"[FORECAST] Generated {len(forecast_data):,} forecast rows.", flush=True)
             forecasts_folder = Path(__file__).parent / "Forecasts"
             forecasts_folder.mkdir(parents=True, exist_ok=True)
@@ -110,7 +115,7 @@ class ForecastApp:
         )
         return self.app.exec()
 
-    def _reforecast(self, model_name: str, target_date: str, target_label: str) -> None:
+    def _reforecast(self, model_name: str, target_date: str, target_label: str, user_polls: dict, ignore_user_polls: bool) -> None:
         dashboard = self.main_window.screens["Dashboard"] # type: ignore
         forecast = self.main_window.screens["Forecast"] # type: ignore
         dashboard.set_forecast_loading(True)
@@ -122,6 +127,8 @@ class ForecastApp:
             compositional=model_name == "Softmax Model",
             target_date=target_date,
             target_label=target_label,
+            user_polls=user_polls,
+            ignore_user_polls=ignore_user_polls,
         )
 
     def _start_forecast_worker(
@@ -131,12 +138,16 @@ class ForecastApp:
         compositional=False,
         target_date="2026-09-21",
         target_label="Tomorrow",
+        user_polls=None,
+        ignore_user_polls=True,
     ) -> None:
         self.forecast_thread = QtCore.QThread()
         self.forecast_worker = ForecastWorker(
             compositional=compositional,
             target_date=target_date,
             target_label=target_label,
+            user_polls=user_polls,
+            ignore_user_polls=ignore_user_polls,
         )
 
         self.forecast_worker.moveToThread(self.forecast_thread)

@@ -1322,7 +1322,26 @@ class ForecastService:
         target_rows["election_year"] = latest_date.year + 1
         return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
 
-    def run_forecast(self, target_date: str | None = None) -> pd.DataFrame:
+    @staticmethod
+    def _apply_user_polls(
+        dataframe: pd.DataFrame,
+        target_year: int,
+        user_polls: dict[str, float] | None,
+    ) -> pd.DataFrame:
+        """Override national_poll_share for forecast-target rows with user-supplied party values."""
+        if not user_polls or "national_poll_share" not in dataframe.columns:
+            return dataframe
+        dataframe = dataframe.copy()
+        target_mask = dataframe["election_year"] == target_year
+        for party, share in user_polls.items():
+            dataframe.loc[target_mask & (dataframe["party_name"] == party), "national_poll_share"] = share
+        return dataframe
+
+    def run_forecast(
+        self,
+        target_date: str | None = None,
+        user_polls: dict[str, float] | None = None,
+    ) -> pd.DataFrame:
         """Load data, create a leakage-safe target set, then train and forecast."""
         raw_data, ward_name_map = self.repository.load_election_data()
         selected_date = target_date or getattr(self.forecaster, "target_date", "2027-09-21")
@@ -1335,6 +1354,7 @@ class ForecastService:
             else latest_timestamp.year + 1
         )
         forecast_input = self._prepare_target_dataset(raw_data, selected_date)
+        forecast_input = self._apply_user_polls(forecast_input, self.forecaster.target_year, user_polls)
         self.forecaster.prepare_data(forecast_input, ward_name_map)
         self.forecaster.train_and_evaluate()
         return self.forecaster.forecast()

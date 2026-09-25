@@ -65,7 +65,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def create_navigation_panel(self):
         panel = QtWidgets.QWidget()
-        panel.setFixedWidth(120)
+        panel.setFixedWidth(135)
         layout = QtWidgets.QVBoxLayout(panel)
         # 50% transparent green: alpha 128 out of 255
         panel.setStyleSheet("background-color: rgba(40, 170, 30, 128);")
@@ -135,24 +135,90 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.reforecast_button)
 
         # add a sliders and a value label for each of the 6 main parties to set current or hypothetical polls
+# Define party colors matching your orchestrator schema
+        party_colors = {
+            'Labour': '#d50000',
+            'Conservative': '#0087dc',
+            'Liberal Democrats': '#FDBB30',
+            'Green Party': '#00a85a',
+            'Reform UK': '#00c3d9',
+            'Restore Britain\n(Great Yarmouth First)': '#000080',
+        }
+
         self.party_sliders = {}
         self.party_slider_values = {}
-        for party in ["Labour", "Conservative", "Liberal Democrats", "Green Party", "Reform UK", "Restore Britain"]:
-            label = QtWidgets.QLabel(party)
-            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-            # add a label displaying the slider's value
-            value_label = QtWidgets.QLabel(str(slider.value()))
-            layout.addWidget(value_label)
-            self.party_slider_values[party] = value_label
-            slider.valueChanged.connect(lambda value, label=value_label: label.setText(str(value)))
 
+        for party, color in party_colors.items():
+            # Party name label (centered)
+            party_label = QtWidgets.QLabel(party)
+            party_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            party_label.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 11px;")
+            
+            # Value display label (centered)
+            value_label = QtWidgets.QLabel("50")
+            value_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            value_label.setStyleSheet("color: #ffffff; font-size: 11px;")
+            
+            # Slider setup with dynamic party-specific color injection
+            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
             slider.setMinimum(0)
-            slider.setMaximum(100)
+            slider.setMaximum(66)
             slider.setValue(50)
+            
+            slider_stylesheet = f"""
+                QSlider::groove:horizontal {{
+                    border: 1px solid #999999;
+                    height: 6px;
+                    background: #ffffff;
+                    border-radius: 3px;
+                }}
+                QSlider::sub-page:horizontal {{
+                    background: {color};
+                    border: 1px solid {color};
+                    height: 6px;
+                    border-radius: 3px;
+                }}
+                QSlider::add-page:horizontal {{
+                    background: #dddddd;
+                    border: 1px solid #cccccc;
+                    height: 6px;
+                    border-radius: 3px;
+                }}
+                QSlider::handle:horizontal {{
+                    background: {color};
+                    border: 1px solid #1a2b3c;
+                    width: 14px;
+                    margin: -4px 0;
+                    border-radius: 7px;
+                }}
+                QSlider::handle:horizontal:hover {{
+                    background: #ffffff;
+                }}
+            """
+            slider.setStyleSheet(slider_stylesheet)
             slider.setToolTip(f"Set the current or hypothetical poll for {party}")
-            layout.addWidget(label)
+            
+            # Connect value change to update the text label
+            slider.valueChanged.connect(lambda value, lbl=value_label: lbl.setText(str(value)))
+
+            # Add widgets to the navigation layout in order
+            layout.addWidget(party_label)
             layout.addWidget(slider)
+            layout.addWidget(value_label)
+
             self.party_sliders[party] = slider
+            self.party_slider_values[party] = value_label
+
+        self.reset_polls_button = QtWidgets.QPushButton("Reset Polls")
+        self.reset_polls_button.setToolTip("Reset all party poll sliders to their default value")
+        self.reset_polls_button.setStyleSheet(blue_button_style)
+        self.reset_polls_button.clicked.connect(self._reset_party_polls)
+        layout.addWidget(self.reset_polls_button)
+
+        self.ignore_user_polls_checkbox = QtWidgets.QCheckBox("Ignore user polls")
+        self.ignore_user_polls_checkbox.setToolTip("Forecast using database polling data instead of the sliders above")
+        self.ignore_user_polls_checkbox.setChecked(True)
+        layout.addWidget(self.ignore_user_polls_checkbox)
 
         layout.addStretch()
         app = QtWidgets.QApplication.instance()
@@ -162,14 +228,15 @@ class MainWindow(QtWidgets.QMainWindow):
         return panel
 
     def set_reforecast_callback(self, callback):
-            self.reforecast_button.clicked.connect(
-                lambda: callback(
-                    self.model_selector.currentData(),
-                    self.date_selector.currentData(),
-                    self.date_selector.currentText(),
-                    self.get_party_polls(),  # <--- Pass user polls here
-                )
+        self.reforecast_button.clicked.connect(
+            lambda: callback(
+                self.model_selector.currentData(),
+                self.date_selector.currentData(),
+                self.date_selector.currentText(),
+                self.get_party_polls(),
+                self.get_ignore_user_polls(),
             )
+        )
 
     def set_reforecast_enabled(self, enabled: bool):
         self.reforecast_button.setEnabled(enabled)
@@ -241,6 +308,15 @@ class MainWindow(QtWidgets.QMainWindow):
         for party, slider in self.party_sliders.items():
             polls[party] = float(slider.value())
         return polls
+
+    def get_ignore_user_polls(self) -> bool:
+        """Whether the forecast should ignore the user-defined poll sliders."""
+        return self.ignore_user_polls_checkbox.isChecked()
+
+    def _reset_party_polls(self) -> None:
+        """Reset every party poll slider back to its default value."""
+        for slider in self.party_sliders.values():
+            slider.setValue(50)
 
 class BaseScreen(QtWidgets.QFrame):
     def __init__(self, parent=None):
