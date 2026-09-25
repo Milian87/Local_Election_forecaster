@@ -161,6 +161,15 @@ class BaseMapOrchestrator:
         return view
 
 class CouncilMapOrchestrator(BaseMapOrchestrator):
+    @staticmethod
+    def _lookup_path() -> Path | None:
+        root = Path(__file__).parent / "data"
+        candidates = [
+            root / "csv" / "Ward_to_LAD_to_County_to_County_Electoral_Division_(May_2026)_Lookup_for_England.csv",
+            root / "csv" / "Ward_to_LAD_to_County_to_County_Electoral_Division_(May_2025)_Lookup_for_England.csv",
+        ]
+        return next((path for path in candidates if path.is_file()), None)
+
     def generate(self, forecast_df):
         gdf = self.load_geodata()
         division_code_column = next(
@@ -170,21 +179,19 @@ class CouncilMapOrchestrator(BaseMapOrchestrator):
         if division_code_column and not any(
             column in gdf.columns for column in ("CTY25NM", "LAD25NM", "CTY26NM", "LAD26NM")
         ):
-            lookup_path = (
-                Path(__file__).parent
-                / "data"
-                / "csv"
-                / "Ward_to_LAD_to_County_to_County_Electoral_Division_(May_2025)_Lookup_for_England.csv"
-            )
-            if lookup_path.is_file():
-                lookup = pd.read_csv(
-                    lookup_path,
-                    usecols=["CED25CD", "CTY25CD", "CTY25NM", "LAD25CD", "LAD25NM"],
-                ).drop_duplicates("CED25CD")
+            lookup_path = self._lookup_path()
+            if lookup_path is not None:
+                lookup = pd.read_csv(lookup_path, low_memory=False)
+                code_column = "CED26CD" if "CED26CD" in lookup.columns else "CED25CD"
+                use_columns = [column for column in (
+                    code_column, "CTY26CD", "CTY26NM", "LAD26CD", "LAD26NM",
+                    "CTY25CD", "CTY25NM", "LAD25CD", "LAD25NM"
+                ) if column in lookup.columns]
+                lookup = lookup[use_columns].drop_duplicates(code_column)
                 gdf = gdf.merge(
                     lookup,
                     left_on=division_code_column,
-                    right_on="CED25CD",
+                    right_on=code_column,
                     how="left",
                     suffixes=("", "_lookup"),
                 )

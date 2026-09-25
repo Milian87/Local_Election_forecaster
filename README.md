@@ -28,10 +28,6 @@ The Delta Model predicts the change in each party's vote share from its historic
 
 The Softmax Model predicts an unconstrained support score for each party or candidate in a division, then normalizes the scores across that division so the forecasted vote shares sum to exactly 100%. This makes the model compositional and ensures that its division-level output is internally consistent.
 
-### 2026 Boundary Enrichment
-
-The 2026 CED ArcGIS service supplies CED geometry and codes but does not currently include council names. `boundaries Download.py` therefore uses the 2026 WD/LAD boundary shapefile as a spatial fallback, assigning each CED to the authority with the greatest polygon overlap. When ONS publishes the official 2026 CED-to-authority lookup, pass its CSV path as `official_lookup_path` to replace the spatial fallback with the authoritative mapping.
-
 ### MySQL fallback
 
 The forecast application uses PostgreSQL by default. To fall back to the retained MySQL backend, set this before starting the app:

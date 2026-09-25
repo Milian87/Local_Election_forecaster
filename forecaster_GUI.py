@@ -134,6 +134,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reforecast_button.setStyleSheet(blue_button_style)
         layout.addWidget(self.reforecast_button)
 
+        # add a sliders and a value label for each of the 6 main parties to set current or hypothetical polls
+        self.party_sliders = {}
+        self.party_slider_values = {}
+        for party in ["Labour", "Conservative", "Liberal Democrats", "Green Party", "Reform UK", "Restore Britain"]:
+            label = QtWidgets.QLabel(party)
+            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            # add a label displaying the slider's value
+            value_label = QtWidgets.QLabel(str(slider.value()))
+            layout.addWidget(value_label)
+            self.party_slider_values[party] = value_label
+            slider.valueChanged.connect(lambda value, label=value_label: label.setText(str(value)))
+
+            slider.setMinimum(0)
+            slider.setMaximum(100)
+            slider.setValue(50)
+            slider.setToolTip(f"Set the current or hypothetical poll for {party}")
+            layout.addWidget(label)
+            layout.addWidget(slider)
+            self.party_sliders[party] = slider
+
         layout.addStretch()
         app = QtWidgets.QApplication.instance()
         if app is None:
@@ -142,13 +162,14 @@ class MainWindow(QtWidgets.QMainWindow):
         return panel
 
     def set_reforecast_callback(self, callback):
-        self.reforecast_button.clicked.connect(
-            lambda: callback(
-                self.model_selector.currentData(),
-                self.date_selector.currentData(),
-                self.date_selector.currentText(),
+            self.reforecast_button.clicked.connect(
+                lambda: callback(
+                    self.model_selector.currentData(),
+                    self.date_selector.currentData(),
+                    self.date_selector.currentText(),
+                    self.get_party_polls(),  # <--- Pass user polls here
+                )
             )
-        )
 
     def set_reforecast_enabled(self, enabled: bool):
         self.reforecast_button.setEnabled(enabled)
@@ -214,6 +235,13 @@ class MainWindow(QtWidgets.QMainWindow):
         for name, button in self.buttons.items():
             button.set_style(active_blue_button_style if name == screen_name else blue_button_style)
 
+    def get_party_polls(self) -> dict[str, float]:
+        """Extract user-defined poll share slider values."""
+        polls = {}
+        for party, slider in self.party_sliders.items():
+            polls[party] = float(slider.value())
+        return polls
+
 class BaseScreen(QtWidgets.QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -267,8 +295,8 @@ class DashboardScreen(BaseScreen):
 
         # add a combo box for selecting level of council (district, county)
         self.level_combo_box = QtWidgets.QComboBox()
-        self.level_combo_box.addItems(["District / Unitary", "County"])
-        self.level_combo_box.setCurrentText("County")
+        self.level_combo_box.addItems(["District / Unitary", "County 2026", "County 2025"])
+        self.level_combo_box.setCurrentText("County 2026")
         self.level_combo_box.currentIndexChanged.connect(lambda: self.refresh_map())
         self.left_layout.addWidget(self.level_combo_box)
         self.summary_table = TransparentTableWidget(
@@ -344,13 +372,15 @@ class DashboardScreen(BaseScreen):
                 / "WD_MAY_2026_UK_BFC.shp"
             )
             forecast_data = self.controller.get_forecast_data()
-        else:
+        elif self.level_combo_box.currentText() == "County 2025":
             boundary_path = (
                 Path(__file__).parent
-                / "data"
-                / "boundaries_2026"
-                / "CED_MAY_2026_EN_BFC.shp"
+                / "data" / "County Electoral Division (May 2025) Boundaries EN BFE"
+                / "CED_MAY_2025_EN_BFC.shp"
             )
+            forecast_data = self.controller.get_county_and_unitary_forecast()
+        else:
+            boundary_path = Path(__file__).parent / "data" / "boundaries_2026" / "CED_MAY_2026_EN_BFC.shp"
             forecast_data = self.controller.get_county_and_unitary_forecast()
         try:
             self.map_orchestrator = map_orchestrator.CouncilMapOrchestrator(str(boundary_path))
@@ -437,8 +467,8 @@ class ForecastScreen(BaseScreen):
 
         # add a combo box for selecting level of council (district, county)
         self.level_combo_box = QtWidgets.QComboBox()
-        self.level_combo_box.addItems(["District / Unitary", "County"])
-        self.level_combo_box.setCurrentText("County")
+        self.level_combo_box.addItems(["District / Unitary", "County 2026", "County 2025"])
+        self.level_combo_box.setCurrentText("County 2026")
         self.level_combo_box.currentIndexChanged.connect(self._level_selection_changed)
         self.left_layout.addWidget(self.level_combo_box)
         self.council_selector = QtWidgets.QComboBox()
@@ -640,13 +670,15 @@ class ForecastScreen(BaseScreen):
                 / "WD_MAY_2026_UK_BFC.shp"
             )
             forecast_data = self.controller.get_forecast_data() # type: ignore
-        else:
+        elif self.level_combo_box.currentText() == "County 2025":
             boundary_path = (
                 Path(__file__).parent
-                / "data"
-                / "boundaries_2026"
-                / "CED_MAY_2026_EN_BFC.shp"
+                / "data" / "County Electoral Division (May 2025) Boundaries EN BFE"
+                / "CED_MAY_2025_EN_BFC.shp"
             )
+            forecast_data = self.controller.get_county_and_unitary_forecast() # type: ignore
+        else:
+            boundary_path = Path(__file__).parent / "data" / "boundaries_2026" / "CED_MAY_2026_EN_BFC.shp"
             forecast_data = self.controller.get_county_and_unitary_forecast() # type: ignore
         try:
             self.map_orchestrator = map_orchestrator.WardMapOrchestrator(str(boundary_path))
