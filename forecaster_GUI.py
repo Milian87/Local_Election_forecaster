@@ -541,17 +541,26 @@ class ForecastScreen(BaseScreen):
             QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter,
         )
 
-        # add a combo box for selecting level of council (district, county)
+
+        # add a horizontal layout to hold the level, council and Division selectors
+        self.selector_layout = QtWidgets.QHBoxLayout()
+        self.left_layout.addLayout(self.selector_layout)
+        # add the level and council selectors to the horizontal layout
         self.level_combo_box = QtWidgets.QComboBox()
         self.level_combo_box.addItems(["District / Unitary", "County 2026", "County 2025"])
         self.level_combo_box.setCurrentText("County 2026")
         self.level_combo_box.currentIndexChanged.connect(self._level_selection_changed)
-        self.left_layout.addWidget(self.level_combo_box)
+        self.selector_layout.addWidget(self.level_combo_box)
         self.council_selector = QtWidgets.QComboBox()
         self.council_selector.addItem("All councils", "")
         self.council_selector.setToolTip("Filter divisions and focus the map by council")
         self.council_selector.currentIndexChanged.connect(self._council_selection_changed)
-        self.left_layout.addWidget(self.council_selector)
+        self.selector_layout.addWidget(self.council_selector)
+        self.division_selector = QtWidgets.QComboBox()
+        self.division_selector.addItem("All divisions", "")
+        self.division_selector.setToolTip("Filter the map by division")
+        self.division_selector.currentIndexChanged.connect("""self._division_selection_changed""")
+        self.selector_layout.addWidget(self.division_selector)
         self.summary_table = TransparentTableWidget(
             ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
         )
@@ -817,4 +826,61 @@ class AnalysisScreen(BaseScreen):
         self.other_visualizations_frame = QtWidgets.QFrame()
         self.other_visualizations_layout = QtWidgets.QVBoxLayout(self.other_visualizations_frame)
         self.right_layout.addWidget(self.other_visualizations_frame)
+
+        # add a horizontal Layout to hold the level combo, council selector, and division selector
+        self.selector_layout = QtWidgets.QHBoxLayout()
+        self.left_layout.addLayout(self.selector_layout)
+        # add the level combo to the selector layout
+        self.level_combo_box = QtWidgets.QComboBox()
+        self.level_combo_box.addItem("All levels", "")
+        self.level_combo_box.setToolTip("Filter the map by level")
+        self.level_combo_box.currentIndexChanged.connect(self._level_selection_changed) # type: ignore
+        self.selector_layout.addWidget(self.level_combo_box)
+        # add the council selector to the selector layout
+        self.council_selector = QtWidgets.QComboBox()
+        self.council_selector.addItem("All councils", "")
+        self.council_selector.setToolTip("Filter the map by council")
+        self.council_selector.currentIndexChanged.connect(self._council_selection_changed) # type: ignore
+        self.selector_layout.addWidget(self.council_selector)
+
+        # add 2 radio button to toggle between different Wards and Results
+        self.ward_radio = QtWidgets.QRadioButton("Wards")
+        self.results_radio = QtWidgets.QRadioButton("Results")
+        self.selector_layout.addWidget(self.ward_radio)
+        self.selector_layout.addWidget(self.results_radio)
+        # set the default selected radio button
+        self.ward_radio.setChecked(True)
+
+        self.ward_radio.toggled.connect(self._ward_radio_toggled) # type: ignore
+        self.results_radio.toggled.connect(self._results_radio_toggled) # type: ignore
+
+        # set the default view to Wards
+        self._ward_radio_toggled() # type: ignore
+
+        # set the default view to Results if the results radio button is selected
+        if self.results_radio.isChecked():
+            self._results_radio_toggled() # type: ignore
+
+        # connect the division selector if it exists
+        if hasattr(self, 'division_selector'):
+            self.division_selector.currentIndexChanged.connect(self._division_selection_changed) # type: ignore
+            self.division_selector.setToolTip("Filter the map by division")
+            self.division_selector.setCurrentIndex(0)
+            self.division_selector.setEnabled(True)
+            self.division_selector.setVisible(True)
+            self.division_selector.setToolTip("Filter the map by division") # type: ignore
+            self.division_selector.setCurrentIndex(0) # type: ignore
+            self.division_selector.setEnabled(True) # type: ignore
+
+        # create a stack to hold the tables to display the data
+        self.table_stack = QtWidgets.QStackedWidget()
+        self.left_layout.addWidget(self.table_stack)
+        # create the tables and add them to the stack
+        self.wards_table = QtWidgets.QTableWidget()
+        self.results_table = QtWidgets.QTableWidget()
+        self.table_stack.addWidget(self.wards_table)
+        self.table_stack.addWidget(self.results_table)
+
+        # set the default table to display
+        self.table_stack.setCurrentWidget(self.wards_table) 
 
