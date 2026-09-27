@@ -559,7 +559,7 @@ class ForecastScreen(BaseScreen):
         self.division_selector = QtWidgets.QComboBox()
         self.division_selector.addItem("All divisions", "")
         self.division_selector.setToolTip("Filter the map by division")
-        self.division_selector.currentIndexChanged.connect("""self._division_selection_changed""")
+        self.division_selector.currentIndexChanged.connect(self._division_selection_changed)
         self.selector_layout.addWidget(self.division_selector)
         self.summary_table = TransparentTableWidget(
             ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
@@ -778,6 +778,14 @@ class ForecastScreen(BaseScreen):
         self.map_layout.addWidget(self.map_view)
         self.forecast_loading_label.setVisible(False)
 
+    def _division_selection_changed(self) -> None:
+        selected_division_code = self.division_selector.currentData()
+        if not selected_division_code:
+            return
+        # Focus map and populate results for the chosen division
+        self.populate_division_results(selected_division_code)
+        self.refresh_map(focus_division=selected_division_code)
+
 class DataScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):
         super().__init__(parent)
@@ -791,14 +799,32 @@ class AnalysisScreen(BaseScreen):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(6)
+        # 1. Main layout as a 2x2 Grid Layout for the four quadrants
+        main_layout = QtWidgets.QGridLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
         
-        # 1. Top Segmented Navigation Header (Switching between Ward List & Results)
+        # Configure row and column stretch so quadrants resize nicely proportionally
+        main_layout.setRowStretch(0, 1)  # Top row (Tables & Map)
+        main_layout.setRowStretch(1, 1)  # Bottom row (Polls & SHAP charts)
+        main_layout.setColumnStretch(0, 1)  # Left column (Tables & Polls)
+        main_layout.setColumnStretch(1, 1)  # Right column (Map & SHAP charts)
+        
+        # ==========================================
+        # QUADRANT 1: TOP-LEFT (Navigation & Tables Stack)
+        # ==========================================
+        top_left_container = QtWidgets.QFrame()
+        top_left_container.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
+        top_left_layout = QtWidgets.QVBoxLayout(top_left_container)
+        
+        # Segmented Navigation Header
         nav_layout = QtWidgets.QHBoxLayout()
         nav_layout.setSpacing(4)
-        
+        # add a combo box for choosing between county and district
+        self.view_selector = QtWidgets.QComboBox()
+        self.view_selector.addItem("County", "county")
+        self.view_selector.addItem("District", "district")
+        nav_layout.addWidget(self.view_selector)
         self.btn_select_view = QtWidgets.QPushButton("Select Ward")
         self.btn_results_view = QtWidgets.QPushButton("Ward Results")
         
@@ -824,12 +850,11 @@ class AnalysisScreen(BaseScreen):
         
         nav_layout.addWidget(self.btn_select_view)
         nav_layout.addWidget(self.btn_results_view)
-        main_layout.addLayout(nav_layout)
+        top_left_layout.addLayout(nav_layout)
         
-        # 2. Stacked Widget holding both tables interchangeably
+        # Stacked Widget for Ward List vs Results Table
         self.stack = QtWidgets.QStackedWidget()
         
-        # --- Page 0: Ward Selection Table (Mirrors Forecast table structure) ---
         self.ward_table = QtWidgets.QTableWidget()
         self.ward_table.setColumnCount(3)
         self.ward_table.setHorizontalHeaderLabels(["Council", "Division", "Code"])
@@ -838,7 +863,6 @@ class AnalysisScreen(BaseScreen):
         self.ward_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.stack.addWidget(self.ward_table)
         
-        # --- Page 1: Predicted Results Breakdown Table (Mirrors Forecast detail view) ---
         self.results_table = QtWidgets.QTableWidget()
         self.results_table.setColumnCount(4)
         self.results_table.setHorizontalHeaderLabels(["Candidate / Party", "Current %", "Forecast %", "Incumbent"])
@@ -846,13 +870,51 @@ class AnalysisScreen(BaseScreen):
         self.results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.stack.addWidget(self.results_table)
         
-        main_layout.addWidget(self.stack)
+        top_left_layout.addWidget(self.stack)
+        main_layout.addWidget(top_left_container, 0, 0)  # Row 0, Col 0
+        
+        # ==========================================
+        # QUADRANT 2: TOP-RIGHT (Interactive Map)
+        # ==========================================
+        top_right_container = QtWidgets.QFrame()
+        top_right_container.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
+        self.top_right_layout = QtWidgets.QVBoxLayout(top_right_container)
+        
+        map_placeholder = QtWidgets.QLabel("Interactive Map View (Top-Right)")
+        map_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.top_right_layout.addWidget(map_placeholder)
+        
+        main_layout.addWidget(top_right_container, 0, 1)  # Row 0, Col 1
+        
+        # ==========================================
+        # QUADRANT 3: BOTTOM-LEFT (Local / National Polls Graph)
+        # ==========================================
+        bottom_left_container = QtWidgets.QFrame()
+        bottom_left_container.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
+        self.bottom_left_layout = QtWidgets.QVBoxLayout(bottom_left_container)
+        
+        polls_placeholder = QtWidgets.QLabel("National & Ward Polling Trend Graph (Bottom-Left)")
+        polls_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.bottom_left_layout.addWidget(polls_placeholder)
+        
+        main_layout.addWidget(bottom_left_container, 1, 0)  # Row 1, Col 0
+        
+        # ==========================================
+        # QUADRANT 4: BOTTOM-RIGHT (SHAP Explainability Chart)
+        # ==========================================
+        bottom_right_container = QtWidgets.QFrame()
+        bottom_right_container.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
+        self.bottom_right_layout = QtWidgets.QVBoxLayout(bottom_right_container)
+        
+        shap_placeholder = QtWidgets.QLabel("SHAP Spatial Impact & Dependence Chart (Bottom-Right)")
+        shap_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.bottom_right_layout.addWidget(shap_placeholder)
+        
+        main_layout.addWidget(bottom_right_container, 1, 1)  # Row 1, Col 1
         
         # Connect navigation buttons
         self.btn_select_view.clicked.connect(lambda: self.switch_view(0))
         self.btn_results_view.clicked.connect(lambda: self.switch_view(1))
-        
-        # Connect row selection on the ward list to trigger loading results
         self.ward_table.cellClicked.connect(self.on_ward_row_clicked)
 
     def switch_view(self, index):
@@ -861,46 +923,26 @@ class AnalysisScreen(BaseScreen):
         self.btn_results_view.setChecked(index == 1)
 
     def populate_ward_list(self, wards_data):
-        """
-        Populates the ward selection table.
-        wards_data: list of tuples/dicts e.g., [(council_name, division_name, wd_code), ...]
-        """
         self.ward_table.setRowCount(len(wards_data))
         for row_idx, (council, division, wd_code) in enumerate(wards_data):
             self.ward_table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(str(council)))
             self.ward_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(str(division)))
             self.ward_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(str(wd_code)))
-        
-        # Optionally hide the code column if you want a cleaner UI
         self.ward_table.setColumnHidden(2, True)
 
     def populate_ward_results(self, ward_name, candidates_data):
-        """
-        Populates the predicted results table for the chosen ward.
-        candidates_data: list of dicts/tuples e.g., [(party_name, current_share, forecast_share, is_incumbent), ...]
-        """
         self.btn_results_view.setText(f"Results: {ward_name}")
         self.results_table.setRowCount(len(candidates_data))
-        
         for row_idx, data in enumerate(candidates_data):
             party, current_share, forecast_share, incumbent = data
             self.results_table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(str(party)))
             self.results_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(f"{float(current_share):.1f}%"))
             self.results_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(f"{float(forecast_share):.1f}%"))
             self.results_table.setItem(row_idx, 3, QtWidgets.QTableWidgetItem("Yes" if incumbent else "No"))
-            
-        # Automatically jump to the results tab once selected
         self.switch_view(1)
 
     def on_ward_row_clicked(self, row, column):
-        """Handles user clicking a row in the ward table."""
-        council_item = self.ward_table.item(row, 0)
         division_item = self.ward_table.item(row, 1)
         code_item = self.ward_table.item(row, 2)
-        
         if division_item and code_item:
-            ward_name = division_item.text()
-            wd_code = code_item.text()
-            # Emit signal so your controller/main window can fetch the ML results for this ward
-            self.wardSelected.emit(wd_code, ward_name)
-
+            self.wardSelected.emit(code_item.text(), division_item.text())
