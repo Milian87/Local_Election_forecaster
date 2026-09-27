@@ -786,101 +786,121 @@ class DataScreen(BaseScreen):
         # Add more widgets and functionality for the Data screen here
 
 class AnalysisScreen(BaseScreen):
-    def __init__(self, controller=None, parent=None):
+    wardSelected = QtCore.Signal(str, str)  # Emits (wd_code, ward_name) when selected
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.controller = controller or DashboardController(SampleData())
-        layout = QtWidgets.QVBoxLayout(self)
-
-
-        # initialize the frame and layout for the dashboard content
-        self.frame = QtWidgets.QFrame()
-        self.dashboard_layout = QtWidgets.QHBoxLayout(self.frame)
-        layout.addWidget(self.frame)
-
-        # add the left layout for the Ward Table and Polling Graphs
-        self.left_frame = QtWidgets.QFrame()
-        self.left_layout = QtWidgets.QVBoxLayout(self.left_frame)
-        self.left_frame.setLayout(self.left_layout)
-        self.dashboard_layout.addWidget(self.left_frame)
-
-        # add the right layout for the map and other visualizations
-        self.right_frame = QtWidgets.QFrame()
-        self.right_layout = QtWidgets.QVBoxLayout(self.right_frame)
-        self.right_frame.setLayout(self.right_layout)
-        self.dashboard_layout.addWidget(self.right_frame)
-
-        # split the left layout into two sections: Ward Table and Polling Graphs
-        self.ward_table_frame = QtWidgets.QFrame()
-        self.ward_table_layout = QtWidgets.QVBoxLayout(self.ward_table_frame)
-        self.left_layout.addWidget(self.ward_table_frame)
-
-        self.polling_graphs_frame = QtWidgets.QFrame()
-        self.polling_graphs_layout = QtWidgets.QVBoxLayout(self.polling_graphs_frame)
-        self.left_layout.addWidget(self.polling_graphs_frame)
-
-        # split the right layout into sections for the map and other visualizations
-        self.map_frame = QtWidgets.QFrame()
-        self.map_layout = QtWidgets.QVBoxLayout(self.map_frame)
-        self.right_layout.addWidget(self.map_frame)
-
-        self.other_visualizations_frame = QtWidgets.QFrame()
-        self.other_visualizations_layout = QtWidgets.QVBoxLayout(self.other_visualizations_frame)
-        self.right_layout.addWidget(self.other_visualizations_frame)
-
-        # add a horizontal Layout to hold the level combo, council selector, and division selector
-        self.selector_layout = QtWidgets.QHBoxLayout()
-        self.left_layout.addLayout(self.selector_layout)
-        # add the level combo to the selector layout
-        self.level_combo_box = QtWidgets.QComboBox()
-        self.level_combo_box.addItem("All levels", "")
-        self.level_combo_box.setToolTip("Filter the map by level")
-        self.level_combo_box.currentIndexChanged.connect(self._level_selection_changed) # type: ignore
-        self.selector_layout.addWidget(self.level_combo_box)
-        # add the council selector to the selector layout
-        self.council_selector = QtWidgets.QComboBox()
-        self.council_selector.addItem("All councils", "")
-        self.council_selector.setToolTip("Filter the map by council")
-        self.council_selector.currentIndexChanged.connect(self._council_selection_changed) # type: ignore
-        self.selector_layout.addWidget(self.council_selector)
-
-        # add 2 radio button to toggle between different Wards and Results
-        self.ward_radio = QtWidgets.QRadioButton("Wards")
-        self.results_radio = QtWidgets.QRadioButton("Results")
-        self.selector_layout.addWidget(self.ward_radio)
-        self.selector_layout.addWidget(self.results_radio)
-        # set the default selected radio button
-        self.ward_radio.setChecked(True)
-
-        self.ward_radio.toggled.connect(self._ward_radio_toggled) # type: ignore
-        self.results_radio.toggled.connect(self._results_radio_toggled) # type: ignore
-
-        # set the default view to Wards
-        self._ward_radio_toggled() # type: ignore
-
-        # set the default view to Results if the results radio button is selected
-        if self.results_radio.isChecked():
-            self._results_radio_toggled() # type: ignore
-
-        # connect the division selector if it exists
-        if hasattr(self, 'division_selector'):
-            self.division_selector.currentIndexChanged.connect(self._division_selection_changed) # type: ignore
-            self.division_selector.setToolTip("Filter the map by division")
-            self.division_selector.setCurrentIndex(0)
-            self.division_selector.setEnabled(True)
-            self.division_selector.setVisible(True)
-            self.division_selector.setToolTip("Filter the map by division") # type: ignore
-            self.division_selector.setCurrentIndex(0) # type: ignore
-            self.division_selector.setEnabled(True) # type: ignore
-
-        # create a stack to hold the tables to display the data
-        self.table_stack = QtWidgets.QStackedWidget()
-        self.left_layout.addWidget(self.table_stack)
-        # create the tables and add them to the stack
-        self.wards_table = QtWidgets.QTableWidget()
+        
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(6)
+        
+        # 1. Top Segmented Navigation Header (Switching between Ward List & Results)
+        nav_layout = QtWidgets.QHBoxLayout()
+        nav_layout.setSpacing(4)
+        
+        self.btn_select_view = QtWidgets.QPushButton("Select Ward")
+        self.btn_results_view = QtWidgets.QPushButton("Ward Results")
+        
+        btn_style = """
+            QPushButton {
+                background-color: #1a4d2e;
+                color: white;
+                border: none;
+                padding: 6px 10px;
+                font-weight: bold;
+                font-size: 11px;
+                border-radius: 4px;
+            }
+            QPushButton:checked {
+                background-color: #28aa1e;
+            }
+        """
+        self.btn_select_view.setStyleSheet(btn_style)
+        self.btn_results_view.setStyleSheet(btn_style)
+        self.btn_select_view.setCheckable(True)
+        self.btn_results_view.setCheckable(True)
+        self.btn_select_view.setChecked(True)
+        
+        nav_layout.addWidget(self.btn_select_view)
+        nav_layout.addWidget(self.btn_results_view)
+        main_layout.addLayout(nav_layout)
+        
+        # 2. Stacked Widget holding both tables interchangeably
+        self.stack = QtWidgets.QStackedWidget()
+        
+        # --- Page 0: Ward Selection Table (Mirrors Forecast table structure) ---
+        self.ward_table = QtWidgets.QTableWidget()
+        self.ward_table.setColumnCount(3)
+        self.ward_table.setHorizontalHeaderLabels(["Council", "Division", "Code"])
+        self.ward_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.ward_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.ward_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.stack.addWidget(self.ward_table)
+        
+        # --- Page 1: Predicted Results Breakdown Table (Mirrors Forecast detail view) ---
         self.results_table = QtWidgets.QTableWidget()
-        self.table_stack.addWidget(self.wards_table)
-        self.table_stack.addWidget(self.results_table)
+        self.results_table.setColumnCount(4)
+        self.results_table.setHorizontalHeaderLabels(["Candidate / Party", "Current %", "Forecast %", "Incumbent"])
+        self.results_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.stack.addWidget(self.results_table)
+        
+        main_layout.addWidget(self.stack)
+        
+        # Connect navigation buttons
+        self.btn_select_view.clicked.connect(lambda: self.switch_view(0))
+        self.btn_results_view.clicked.connect(lambda: self.switch_view(1))
+        
+        # Connect row selection on the ward list to trigger loading results
+        self.ward_table.cellClicked.connect(self.on_ward_row_clicked)
 
-        # set the default table to display
-        self.table_stack.setCurrentWidget(self.wards_table) 
+    def switch_view(self, index):
+        self.stack.setCurrentIndex(index)
+        self.btn_select_view.setChecked(index == 0)
+        self.btn_results_view.setChecked(index == 1)
+
+    def populate_ward_list(self, wards_data):
+        """
+        Populates the ward selection table.
+        wards_data: list of tuples/dicts e.g., [(council_name, division_name, wd_code), ...]
+        """
+        self.ward_table.setRowCount(len(wards_data))
+        for row_idx, (council, division, wd_code) in enumerate(wards_data):
+            self.ward_table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(str(council)))
+            self.ward_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(str(division)))
+            self.ward_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(str(wd_code)))
+        
+        # Optionally hide the code column if you want a cleaner UI
+        self.ward_table.setColumnHidden(2, True)
+
+    def populate_ward_results(self, ward_name, candidates_data):
+        """
+        Populates the predicted results table for the chosen ward.
+        candidates_data: list of dicts/tuples e.g., [(party_name, current_share, forecast_share, is_incumbent), ...]
+        """
+        self.btn_results_view.setText(f"Results: {ward_name}")
+        self.results_table.setRowCount(len(candidates_data))
+        
+        for row_idx, data in enumerate(candidates_data):
+            party, current_share, forecast_share, incumbent = data
+            self.results_table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(str(party)))
+            self.results_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(f"{float(current_share):.1f}%"))
+            self.results_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(f"{float(forecast_share):.1f}%"))
+            self.results_table.setItem(row_idx, 3, QtWidgets.QTableWidgetItem("Yes" if incumbent else "No"))
+            
+        # Automatically jump to the results tab once selected
+        self.switch_view(1)
+
+    def on_ward_row_clicked(self, row, column):
+        """Handles user clicking a row in the ward table."""
+        council_item = self.ward_table.item(row, 0)
+        division_item = self.ward_table.item(row, 1)
+        code_item = self.ward_table.item(row, 2)
+        
+        if division_item and code_item:
+            ward_name = division_item.text()
+            wd_code = code_item.text()
+            # Emit signal so your controller/main window can fetch the ML results for this ward
+            self.wardSelected.emit(wd_code, ward_name)
 
