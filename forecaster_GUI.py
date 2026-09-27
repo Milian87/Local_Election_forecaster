@@ -397,7 +397,7 @@ class DashboardScreen(BaseScreen):
         # QUADRANT 3: BOTTOM-LEFT (Vote Share Table)
         # ==========================================
         bottom_left_container = QtWidgets.QFrame()
-        bottom_left_container.setStyleSheet("background-color: rgba(40, 170, 30, 128); border-radius: 10px;")
+        bottom_left_container.setStyleSheet("background-color: rgba(0, 100, 59, 160); border-radius: 10px;")
         bottom_left_layout = QtWidgets.QVBoxLayout(bottom_left_container)
 
         self.vote_share_table = TransparentTableWidget(
