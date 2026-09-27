@@ -779,7 +779,42 @@ class DataScreen(BaseScreen):
 class AnalysisScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):
         super().__init__(parent)
-        self.controller = controller
+        self.controller = controller or DashboardController(SampleData())
         layout = QtWidgets.QVBoxLayout(self)
-        # Add more widgets and functionality for the Analysis screen here
+
+
+        # initialize the frame and layout for the dashboard content
+        self.frame = QtWidgets.QFrame()
+        self.dashboard_layout = QtWidgets.QHBoxLayout(self.frame)
+        layout.addWidget(self.frame)
+
+        # add the left layout for the Ward Table and Polling Graphs
+        self.left_frame = QtWidgets.QFrame()
+        self.left_layout = QtWidgets.QVBoxLayout(self.left_frame)
+        self.left_frame.setLayout(self.left_layout)
+        self.dashboard_layout.addWidget(self.left_frame)
+
+        # add the right layout for the map and other visualizations
+        self.right_frame = QtWidgets.QFrame()
+        self.right_layout = QtWidgets.QVBoxLayout(self.right_frame)
+        self.right_frame.setLayout(self.right_layout)
+        self.dashboard_layout.addWidget(self.right_frame)
+
+        # split the left layout into two sections: Ward Table and Polling Graphs
+        self.ward_table_frame = QtWidgets.QFrame()
+        self.ward_table_layout = QtWidgets.QVBoxLayout(self.ward_table_frame)
+        self.left_layout.addWidget(self.ward_table_frame)
+
+        self.polling_graphs_frame = QtWidgets.QFrame()
+        self.polling_graphs_layout = QtWidgets.QVBoxLayout(self.polling_graphs_frame)
+        self.left_layout.addWidget(self.polling_graphs_frame)
+
+        # split the right layout into sections for the map and other visualizations
+        self.map_frame = QtWidgets.QFrame()
+        self.map_layout = QtWidgets.QVBoxLayout(self.map_frame)
+        self.right_layout.addWidget(self.map_frame)
+
+        self.other_visualizations_frame = QtWidgets.QFrame()
+        self.other_visualizations_layout = QtWidgets.QVBoxLayout(self.other_visualizations_frame)
+        self.right_layout.addWidget(self.other_visualizations_frame)
 
