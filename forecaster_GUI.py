@@ -328,27 +328,49 @@ class DashboardScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):
         super().__init__(parent)
         self.controller = controller or DashboardController(SampleData())
-        layout = QtWidgets.QVBoxLayout(self)
+        # Initialize map_view attribute to prevent AttributeError
+        self.map_view = None
+        
+        # 1. Main layout as a 2x2 Grid Layout for the dashboard quadrants
+        main_layout = QtWidgets.QGridLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        
+        # Configure row and column stretch for proportional scaling
+        main_layout.setRowStretch(0, 1)  # Top row (Summary Table & Map)
+        main_layout.setRowStretch(1, 1)  # Bottom row (Vote Share Table & Secondary View)
+        main_layout.setColumnStretch(0, 1)  # Left column (Tables)
+        main_layout.setColumnStretch(1, 1)  # Right column (Map & Analytics)
 
+        # ==========================================
+        # QUADRANT 1: TOP-LEFT (Council Summaries Table)
+        # ==========================================
+        top_left_container = QtWidgets.QFrame()
+        top_left_container.setStyleSheet("background-color: rgba(255, 255, 255, 200); border-radius: 10px;")
+        top_left_layout = QtWidgets.QVBoxLayout(top_left_container)
 
-        # initialize the frame and layout for the dashboard content
-        self.frame = QtWidgets.QFrame()
-        self.dashboard_layout = QtWidgets.QHBoxLayout(self.frame)
-        layout.addWidget(self.frame)
+        # Level selector combo box
+        self.level_combo_box = QtWidgets.QComboBox()
+        self.level_combo_box.addItems(["District / Unitary", "County 2026", "County 2025"])
+        self.level_combo_box.setCurrentText("County 2026")
+        self.level_combo_box.currentIndexChanged.connect(lambda: self.refresh_map())
+        top_left_layout.addWidget(self.level_combo_box)
 
-        # add the left layout for the summary and statistics
-        self.left_frame = QtWidgets.QFrame()
-        #self.left_frame.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
-        self.left_layout = QtWidgets.QVBoxLayout(self.left_frame)
-        self.dashboard_layout.addWidget(self.left_frame)
+        # Summary Table
+        self.summary_table = TransparentTableWidget(
+            ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
+        )
+        top_left_layout.addWidget(self.summary_table, 1)
 
-        # add the right layout for the map
-        self.right_frame = QtWidgets.QFrame()
-        self.right_frame.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
-        self.right_layout = QtWidgets.QStackedLayout(self.right_frame)
+        main_layout.addWidget(top_left_container, 0, 0)  # Row 0, Col 0
+
+        # ==========================================
+        # QUADRANT 2: TOP-RIGHT (Interactive Map)
+        # ==========================================
+        top_right_container = QtWidgets.QFrame()
+        top_right_container.setStyleSheet("background-color: rgba(255, 255, 255, 200); border-radius: 10px;")
+        self.right_layout = QtWidgets.QStackedLayout(top_right_container)
         self.right_layout.setStackingMode(QtWidgets.QStackedLayout.StackingMode.StackAll)
-        self.right_frame.setFixedWidth(750)
-        self.dashboard_layout.addWidget(self.right_frame)
 
         self.forecast_loading_label = QtWidgets.QLabel(
             "We are now conducting the forecast, please wait"
@@ -369,26 +391,22 @@ class DashboardScreen(BaseScreen):
             QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter,
         )
 
-        # add a combo box for selecting level of council (district, county)
-        self.level_combo_box = QtWidgets.QComboBox()
-        self.level_combo_box.addItems(["District / Unitary", "County 2026", "County 2025"])
-        self.level_combo_box.setCurrentText("County 2026")
-        self.level_combo_box.currentIndexChanged.connect(lambda: self.refresh_map())
-        self.left_layout.addWidget(self.level_combo_box)
-        self.summary_table = TransparentTableWidget(
-            ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
-        )
-        self.left_layout.addWidget(self.summary_table)
+        main_layout.addWidget(top_right_container, 0, 1, 2, 1)  # Row 0, Col 1
+
+        # ==========================================
+        # QUADRANT 3: BOTTOM-LEFT (Vote Share Table)
+        # ==========================================
+        bottom_left_container = QtWidgets.QFrame()
+        bottom_left_container.setStyleSheet("background-color: rgba(255, 255, 255, 200); border-radius: 10px;")
+        bottom_left_layout = QtWidgets.QVBoxLayout(bottom_left_container)
 
         self.vote_share_table = TransparentTableWidget(
-            ["Party", "national Vote Share", "Seats"]
+            ["Party", "National Vote Share", "Seats"]
         )
-        self.left_layout.addWidget(self.vote_share_table)
+        bottom_left_layout.addWidget(self.vote_share_table, 1)
 
-        self.populate_tables()
+        main_layout.addWidget(bottom_left_container, 1, 0)  # Row 1, Col 0
 
-        self.map_view = None
-        self.refresh_map()
 
     def populate_tables(self):
         summary = self.controller.get_summary()
@@ -460,9 +478,7 @@ class DashboardScreen(BaseScreen):
             forecast_data = self.controller.get_county_and_unitary_forecast()
         try:
             self.map_orchestrator = map_orchestrator.CouncilMapOrchestrator(str(boundary_path))
-            self.map_view = self.map_orchestrator.generate(
-                forecast_data
-            )
+            self.map_view = self.map_orchestrator.generate(forecast_data)
         except (OSError, ValueError, ImportError) as error:
             self.map_view = QtWidgets.QLabel(f"Map unavailable: {error}")
             self.map_view.setWordWrap(True)
@@ -484,43 +500,65 @@ class ForecastScreen(BaseScreen):
     def __init__(self, controller=None, parent=None):
         super().__init__(parent)
         self.controller = controller
-        layout = QtWidgets.QVBoxLayout(self)
-
-        # initialize the frame and layout for the Forecast content
-        self.frame = QtWidgets.QFrame()
-        self.Forecast_layout = QtWidgets.QHBoxLayout(self.frame)
-        layout.addWidget(self.frame)
-
-        # add the left layout for the summary and statistics
-        self.left_frame = QtWidgets.QFrame()
-        #self.left_frame.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
-        self.left_layout = QtWidgets.QVBoxLayout(self.left_frame)
-        self.Forecast_layout.addWidget(self.left_frame)
-
         
-        # add the right layout for the map and ward's forecast table
-        self.right_frame = QtWidgets.QFrame()
-        self.right_frame.setStyleSheet("background: transparent;")
-        self.right_layout = QtWidgets.QVBoxLayout(self.right_frame)
-        self.right_frame.setFixedWidth(750)
-        self.Forecast_layout.addWidget(self.right_frame)
+        # 1. Main layout as a 2x2 Grid Layout for the four quadrants
+        main_layout = QtWidgets.QGridLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        
+        # Configure row and column stretch for proportional scaling
+        main_layout.setRowStretch(0, 1)  # Top row (Selectors/Tables & Map)
+        main_layout.setRowStretch(1, 1)  # Bottom row (Vote Shares & Ward Results)
+        main_layout.setColumnStretch(0, 1)  # Left column (Tables & Controls)
+        main_layout.setColumnStretch(1, 1)  # Right column (Map & Detailed Breakdown)
 
-        # add an upper section for the forecast map
-        self.map_container = QtWidgets.QFrame()
-        self.map_container.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
-        self.map_layout = QtWidgets.QVBoxLayout(self.map_container)
-        self.right_layout.addWidget(self.map_container, 3)
+        # ==========================================
+        # QUADRANT 1: TOP-LEFT (Selectors & Summary Table)
+        # ==========================================
+        top_left_container = QtWidgets.QFrame()
+        top_left_container.setStyleSheet("background-color: rgba(255, 255, 255, 200); border-radius: 10px;")
+        top_left_layout = QtWidgets.QVBoxLayout(top_left_container)
 
-        # add a lower section for the ward's forecast table
-        self.ward_forecast_container = QtWidgets.QFrame()
-        self.ward_forecast_container.setStyleSheet("background-color: #ffffff; border-radius: 10px;")
-        self.ward_forecast_layout = QtWidgets.QVBoxLayout(self.ward_forecast_container)
-        self.right_layout.addWidget(self.ward_forecast_container, 2)
+        # Selectors layout (Level, Council, Division)
+        self.selector_layout = QtWidgets.QHBoxLayout()
+        top_left_layout.addLayout(self.selector_layout)
 
-        self.ward_forecast_table = TransparentTableWidget(
-            ["Candidate", "Party", "Current Share", "Forecast Share"]
+        self.level_combo_box = QtWidgets.QComboBox()
+        self.level_combo_box.addItems(["District / Unitary", "County 2026", "County 2025"])
+        self.level_combo_box.setCurrentText("County 2026")
+        self.level_combo_box.currentIndexChanged.connect(self._level_selection_changed)
+        self.selector_layout.addWidget(self.level_combo_box)
+
+        self.council_selector = QtWidgets.QComboBox()
+        self.council_selector.addItem("All councils", "")
+        self.council_selector.setToolTip("Filter divisions and focus the map by council")
+        self.council_selector.currentIndexChanged.connect(self._council_selection_changed)
+        self.selector_layout.addWidget(self.council_selector)
+
+        self.division_selector = QtWidgets.QComboBox()
+        self.division_selector.addItem("All divisions", "")
+        self.division_selector.setToolTip("Filter the map by division")
+        self.division_selector.currentIndexChanged.connect(self._division_selection_changed)
+        self.selector_layout.addWidget(self.division_selector)
+
+        # Summary Table
+        self.summary_table = TransparentTableWidget(
+            ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
         )
-        self.ward_forecast_layout.addWidget(self.ward_forecast_table)
+        top_left_layout.addWidget(self.summary_table, 1)
+        self.summary_table.cellClicked.connect(self._focus_map_from_table)
+
+        # Make the left column span both row 0 and row 1
+        main_layout.addWidget(top_left_container, 0, 0, 2, 1)  # (Row 0, Col 0, span 2 rows, span 1 col)
+
+
+
+        # ==========================================
+        # QUADRANT 2: TOP-RIGHT (Interactive Map)
+        # ==========================================
+        top_right_container = QtWidgets.QFrame()
+        top_right_container.setStyleSheet("background-color: rgba(255, 255, 255, 200); border-radius: 10px;")
+        self.map_layout = QtWidgets.QVBoxLayout(top_right_container)
 
         self.forecast_loading_label = QtWidgets.QLabel(
             "We are now conducting the forecast, please wait"
@@ -541,44 +579,26 @@ class ForecastScreen(BaseScreen):
             QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter,
         )
 
+        main_layout.addWidget(top_right_container, 0, 1)  # Row 0, Col 1
 
-        # add a horizontal layout to hold the level, council and Division selectors
-        self.selector_layout = QtWidgets.QHBoxLayout()
-        self.left_layout.addLayout(self.selector_layout)
-        # add the level and council selectors to the horizontal layout
-        self.level_combo_box = QtWidgets.QComboBox()
-        self.level_combo_box.addItems(["District / Unitary", "County 2026", "County 2025"])
-        self.level_combo_box.setCurrentText("County 2026")
-        self.level_combo_box.currentIndexChanged.connect(self._level_selection_changed)
-        self.selector_layout.addWidget(self.level_combo_box)
-        self.council_selector = QtWidgets.QComboBox()
-        self.council_selector.addItem("All councils", "")
-        self.council_selector.setToolTip("Filter divisions and focus the map by council")
-        self.council_selector.currentIndexChanged.connect(self._council_selection_changed)
-        self.selector_layout.addWidget(self.council_selector)
-        self.division_selector = QtWidgets.QComboBox()
-        self.division_selector.addItem("All divisions", "")
-        self.division_selector.setToolTip("Filter the map by division")
-        self.division_selector.currentIndexChanged.connect(self._division_selection_changed)
-        self.selector_layout.addWidget(self.division_selector)
-        self.summary_table = TransparentTableWidget(
-            ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
-        )
-        # add a left section for the list of divisions, incumbant cllr, forecast winner
-        self.left_layout.addWidget(self.summary_table, 1)
-        self.summary_table.cellClicked.connect(self._focus_map_from_table)
-        self.vote_share_table = TransparentTableWidget(
-            ["Party", "National Vote Share", "Seats"]
-        )
-        self.vote_share_table.setVisible(False)
+        # ==========================================
+        # QUADRANT 4: BOTTOM-RIGHT (Ward Results Breakdown Table)
+        # ==========================================
+        bottom_right_container = QtWidgets.QFrame()
+        bottom_right_container.setStyleSheet("background-color: rgba(255, 255, 255, 200); border-radius: 10px;")
+        ward_forecast_layout = QtWidgets.QVBoxLayout(bottom_right_container)
 
-        #self.populate_tables()
+        self.ward_forecast_table = TransparentTableWidget(
+            ["Candidate", "Party", "Current Share", "Forecast Share"]
+        )
+        ward_forecast_layout.addWidget(self.ward_forecast_table)
+
+        main_layout.addWidget(bottom_right_container, 1, 1)  # Row 1, Col 1
 
         self.map_view = None
-        #self.refresh_map()
 
     def populate_tables(self):
-        division_forecasts = self.controller.get_division_forecasts() # type: ignore
+        division_forecasts = self.controller.get_division_forecasts()  # type: ignore
         selected_council = self.council_selector.currentData()
         self.council_selector.blockSignals(True)
         self.council_selector.clear()
@@ -622,12 +642,11 @@ class ForecastScreen(BaseScreen):
                 self.summary_table.setItem(row_index, column_index, item)
 
         self.summary_table.resizeColumnsToContents()
-
         self._division_forecasts = division_forecasts
 
     def _council_selection_changed(self) -> None:
         selected_council = self.council_selector.currentData()
-        all_divisions = self.controller.get_division_forecasts() # type: ignore
+        all_divisions = self.controller.get_division_forecasts()  # type: ignore
         if selected_council:
             filtered = all_divisions[
                 all_divisions["council"].astype(str).str.strip() == str(selected_council).strip()
@@ -674,7 +693,7 @@ class ForecastScreen(BaseScreen):
             self.refresh_map(focus_division=row["division_code"])
 
     def populate_council_results(self, council_name: str) -> None:
-        results = self.controller.get_council_results(council_name) # type: ignore
+        results = self.controller.get_council_results(council_name)  # type: ignore
         self.ward_forecast_table.setHorizontalHeaderLabels(
             ["Party", "Current Seats", "Forecast Seats", "Seats Gained"]
         )
@@ -696,7 +715,7 @@ class ForecastScreen(BaseScreen):
         self.ward_forecast_table.resizeColumnsToContents()
 
     def populate_division_results(self, division_code: str) -> None:
-        results = self.controller.get_division_results(division_code) # type: ignore
+        results = self.controller.get_division_results(division_code)  # type: ignore
         self.ward_forecast_table.setHorizontalHeaderLabels(
             ["Candidate", "Party", "Current Share", "Forecast Share"]
         )
@@ -754,17 +773,17 @@ class ForecastScreen(BaseScreen):
                 / "Borough and District Boundaries 2025"
                 / "WD_MAY_2026_UK_BFC.shp"
             )
-            forecast_data = self.controller.get_forecast_data() # type: ignore
+            forecast_data = self.controller.get_forecast_data()  # type: ignore
         elif self.level_combo_box.currentText() == "County 2025":
             boundary_path = (
                 Path(__file__).parent
                 / "data" / "County Electoral Division (May 2025) Boundaries EN BFE"
                 / "CED_MAY_2025_EN_BFC.shp"
             )
-            forecast_data = self.controller.get_county_and_unitary_forecast() # type: ignore
+            forecast_data = self.controller.get_county_and_unitary_forecast()  # type: ignore
         else:
             boundary_path = Path(__file__).parent / "data" / "boundaries_2026" / "CED_MAY_2026_EN_BFC.shp"
-            forecast_data = self.controller.get_county_and_unitary_forecast() # type: ignore
+            forecast_data = self.controller.get_county_and_unitary_forecast()  # type: ignore
         try:
             self.map_orchestrator = map_orchestrator.WardMapOrchestrator(str(boundary_path))
             self.map_view = self.map_orchestrator.generate(
@@ -782,7 +801,6 @@ class ForecastScreen(BaseScreen):
         selected_division_code = self.division_selector.currentData()
         if not selected_division_code:
             return
-        # Focus map and populate results for the chosen division
         self.populate_division_results(selected_division_code)
         self.refresh_map(focus_division=selected_division_code)
 
