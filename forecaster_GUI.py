@@ -22,6 +22,22 @@ from widgets import (
 from widgets import TransparentTableWidget
 import forecaster_MapOrchestrator as map_orchestrator
 
+# ==========================================
+# GLOBAL UI THEME CONFIGURATION
+# ==========================================
+# Change this single variable to update quadrant backgrounds across all screens
+#Q UADRANT_BG_COLOR = "rgba(240, 242, 240, 210)"  # Faint frosted grey
+QUADRANT_BG_COLOR = "rgba(0, 100, 59, 175)"   # Or Frosted Forest Green
+# QUADRANT_BG_COLOR = "rgba(255, 255, 255, 220)" # Or Frosted White
+
+GLOBAL_CONTAINER_STYLE = f"""
+    QFrame {{
+        background-color: {QUADRANT_BG_COLOR};
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 100);
+    }}
+"""
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, screens, parent=None):
         super().__init__(parent)
@@ -346,7 +362,7 @@ class DashboardScreen(BaseScreen):
         # QUADRANT 1: TOP-LEFT (Council Summaries Table)
         # ==========================================
         top_left_container = QtWidgets.QFrame()
-        top_left_container.setStyleSheet("background-color: rgba(0, 100, 59, 160); border-radius: 10px;")
+        top_left_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         top_left_layout = QtWidgets.QVBoxLayout(top_left_container)
 
         # Level selector combo box
@@ -368,7 +384,7 @@ class DashboardScreen(BaseScreen):
         # QUADRANT 2: TOP-RIGHT (Interactive Map)
         # ==========================================
         top_right_container = QtWidgets.QFrame()
-        top_right_container.setStyleSheet("background-color: rgba(0, 100, 59, 160); border-radius: 10px;")
+        top_right_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         self.right_layout = QtWidgets.QStackedLayout(top_right_container)
         self.right_layout.setStackingMode(QtWidgets.QStackedLayout.StackingMode.StackAll)
 
@@ -397,7 +413,7 @@ class DashboardScreen(BaseScreen):
         # QUADRANT 3: BOTTOM-LEFT (Vote Share Table)
         # ==========================================
         bottom_left_container = QtWidgets.QFrame()
-        bottom_left_container.setStyleSheet("background-color: rgba(0, 100, 59, 160); border-radius: 10px;")
+        bottom_left_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         bottom_left_layout = QtWidgets.QVBoxLayout(bottom_left_container)
 
         self.vote_share_table = TransparentTableWidget(
@@ -516,7 +532,7 @@ class ForecastScreen(BaseScreen):
         # QUADRANT 1: TOP-LEFT (Selectors & Summary Table)
         # ==========================================
         top_left_container = QtWidgets.QFrame()
-        top_left_container.setStyleSheet("background-color: rgba(40, 170, 30, 128); border-radius: 10px;")
+        top_left_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         top_left_layout = QtWidgets.QVBoxLayout(top_left_container)
 
         # Selectors layout (Level, Council, Division)
@@ -557,7 +573,7 @@ class ForecastScreen(BaseScreen):
         # QUADRANT 2: TOP-RIGHT (Interactive Map)
         # ==========================================
         top_right_container = QtWidgets.QFrame()
-        top_right_container.setStyleSheet("background-color: rgba(40, 170, 30, 128); border-radius: 10px;")
+        top_right_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         self.map_layout = QtWidgets.QVBoxLayout(top_right_container)
 
         self.forecast_loading_label = QtWidgets.QLabel(
@@ -585,7 +601,7 @@ class ForecastScreen(BaseScreen):
         # QUADRANT 4: BOTTOM-RIGHT (Ward Results Breakdown Table)
         # ==========================================
         bottom_right_container = QtWidgets.QFrame()
-        bottom_right_container.setStyleSheet("background-color: rgba(40, 170, 30, 128); border-radius: 10px;")
+        bottom_right_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         ward_forecast_layout = QtWidgets.QVBoxLayout(bottom_right_container)
 
         self.ward_forecast_table = TransparentTableWidget(
@@ -832,7 +848,7 @@ class AnalysisScreen(BaseScreen):
         # QUADRANT 1: TOP-LEFT (Navigation & Tables Stack)
         # ==========================================
         top_left_container = QtWidgets.QFrame()
-        top_left_container.setStyleSheet("background-color: rgba(40, 170, 30, 128); border-radius: 10px;")
+        top_left_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         top_left_layout = QtWidgets.QVBoxLayout(top_left_container)
         
         # Segmented Navigation Header
@@ -895,7 +911,7 @@ class AnalysisScreen(BaseScreen):
         # QUADRANT 2: TOP-RIGHT (Interactive Map)
         # ==========================================
         top_right_container = QtWidgets.QFrame()
-        top_right_container.setStyleSheet("background-color: rgba(40, 170, 30, 128); border-radius: 10px;")
+        top_right_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         self.top_right_layout = QtWidgets.QVBoxLayout(top_right_container)
         
         map_placeholder = QtWidgets.QLabel("Interactive Map View (Top-Right)")
@@ -908,7 +924,7 @@ class AnalysisScreen(BaseScreen):
         # QUADRANT 3: BOTTOM-LEFT (Local / National Polls Graph)
         # ==========================================
         bottom_left_container = QtWidgets.QFrame()
-        bottom_left_container.setStyleSheet("background-color: rgba(40, 170, 30, 128); border-radius: 10px;")
+        bottom_left_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         self.bottom_left_layout = QtWidgets.QVBoxLayout(bottom_left_container)
         
         polls_placeholder = QtWidgets.QLabel("National & Ward Polling Trend Graph (Bottom-Left)")
@@ -921,7 +937,7 @@ class AnalysisScreen(BaseScreen):
         # QUADRANT 4: BOTTOM-RIGHT (SHAP Explainability Chart)
         # ==========================================
         bottom_right_container = QtWidgets.QFrame()
-        bottom_right_container.setStyleSheet("background-color: rgba(40, 170, 30, 128); border-radius: 10px;")
+        bottom_right_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         self.bottom_right_layout = QtWidgets.QVBoxLayout(bottom_right_container)
         
         shap_placeholder = QtWidgets.QLabel("SHAP Spatial Impact & Dependence Chart (Bottom-Right)")
