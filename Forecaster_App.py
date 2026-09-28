@@ -105,12 +105,16 @@ class ForecastApp:
         self.main_window.showMaximized()
         self.main_window.set_reforecast_callback(self._reforecast)
         self.main_window.set_forecaster_label("Delta Model - Tomorrow")
+        
         screen_widgets["Dashboard"].set_forecast_loading(True)
         screen_widgets["Forecast"].set_forecast_loading(True)
+        screen_widgets["Analysis"].set_forecast_loading(True)
+        
         self.main_window.set_reforecast_enabled(False)
         self._start_forecast_worker(
             screen_widgets["Dashboard"],
             screen_widgets["Forecast"],
+            screen_widgets["Analysis"], # Pass Analysis screen here
             target_label="Tomorrow",
         )
         return self.app.exec()
@@ -118,12 +122,14 @@ class ForecastApp:
     def _reforecast(self, model_name: str, target_date: str, target_label: str, user_polls: dict, ignore_user_polls: bool) -> None:
         dashboard = self.main_window.screens["Dashboard"] # type: ignore
         forecast = self.main_window.screens["Forecast"] # type: ignore
+        analysis = self.main_window.screens["Analysis"] # type: ignore
         dashboard.set_forecast_loading(True)
         forecast.set_forecast_loading(True)
         self.main_window.set_reforecast_enabled(False) # type: ignore
         self._start_forecast_worker(
             dashboard,
             forecast,
+            analysis,
             compositional=model_name == "Softmax Model",
             target_date=target_date,
             target_label=target_label,
@@ -135,6 +141,7 @@ class ForecastApp:
         self,
         dashboard: DashboardScreen,
         forecast: ForecastScreen,
+        analysis: AnalysisScreen,
         compositional=False,
         target_date="2026-09-21",
         target_label="Tomorrow",
@@ -166,6 +173,10 @@ class ForecastApp:
                 getattr(forecaster, "model_name", "Delta Model")
                 + f" - {target_label}"
             ),
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
+        self.forecast_worker.completed.connect(
+            analysis.set_forecaster,
             QtCore.Qt.ConnectionType.QueuedConnection,
         )
         self.forecast_worker.failed.connect(

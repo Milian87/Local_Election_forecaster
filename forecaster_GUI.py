@@ -389,7 +389,7 @@ class DashboardScreen(BaseScreen):
         self.right_layout.setStackingMode(QtWidgets.QStackedLayout.StackingMode.StackAll)
 
         self.forecast_loading_label = QtWidgets.QLabel(
-            "We are now conducting the forecast, please wait"
+            "Please wait while we conduct the forecast"
         )
         self.forecast_loading_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.forecast_loading_label.setWordWrap(True)
@@ -830,8 +830,9 @@ class DataScreen(BaseScreen):
 class AnalysisScreen(BaseScreen):
     wardSelected = QtCore.Signal(str, str)  # Emits (wd_code, ward_name) when selected
 
-    def __init__(self, parent=None):
+    def __init__(self, controller=None, parent=None):
         super().__init__(parent)
+        self.controller = controller
         
         # 1. Main layout as a 2x2 Grid Layout for the four quadrants
         main_layout = QtWidgets.QGridLayout(self)
@@ -858,6 +859,10 @@ class AnalysisScreen(BaseScreen):
         self.view_selector = QtWidgets.QComboBox()
         self.view_selector.addItem("County", "county")
         self.view_selector.addItem("District", "district")
+        # add a combo box for choosing which county or district to view
+        self.region_selector = QtWidgets.QComboBox()
+        nav_layout.addWidget(self.region_selector)
+        nav_layout.addWidget(self.view_selector)
         nav_layout.addWidget(self.view_selector)
         self.btn_select_view = QtWidgets.QPushButton("Select Ward")
         self.btn_results_view = QtWidgets.QPushButton("Ward Results")
@@ -890,8 +895,8 @@ class AnalysisScreen(BaseScreen):
         self.stack = QtWidgets.QStackedWidget()
         
         self.ward_table = QtWidgets.QTableWidget()
-        self.ward_table.setColumnCount(3)
-        self.ward_table.setHorizontalHeaderLabels(["Council", "Division", "Code"])
+        self.ward_table.setColumnCount(5)
+        self.ward_table.setHorizontalHeaderLabels(["Council", "Division", "Current Councilor", "Party", "Forecast"])
         self.ward_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.ward_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.ward_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -899,7 +904,7 @@ class AnalysisScreen(BaseScreen):
         
         self.results_table = QtWidgets.QTableWidget()
         self.results_table.setColumnCount(4)
-        self.results_table.setHorizontalHeaderLabels(["Candidate / Party", "Current %", "Forecast %", "Incumbent"])
+        self.results_table.setHorizontalHeaderLabels(["Candidate","Party", "Current %", "Forecast %"])
         self.results_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.stack.addWidget(self.results_table)
@@ -980,3 +985,35 @@ class AnalysisScreen(BaseScreen):
         code_item = self.ward_table.item(row, 2)
         if division_item and code_item:
             self.wardSelected.emit(code_item.text(), division_item.text())
+    
+    def set_controller(self, controller) -> None:
+        """Allows the controller to be injected or updated, matching Forecast/Dashboard screens."""
+        self.controller = controller
+        self.populate_from_controller()
+
+    def populate_from_controller(self):
+        """Fetches division forecasts using the same source as the Forecast screen."""
+        if self.controller is None:
+            return
+        
+        try:
+            # Gets the exact same DataFrame used by ForecastScreen
+            division_forecasts = self.controller.get_division_forecasts()
+            if division_forecasts is not None and not division_forecasts.empty:
+                # Transform DataFrame rows into tuples: (council, division, division_code)
+                wards_data = []
+                for _, row in division_forecasts.iterrows():
+                    council = str(row.get("council", ""))
+                    division = str(row.get("division", ""))
+                    code = str(row.get("division_code", ""))
+                    wards_data.append((council, division, code))
+                
+                self.populate_ward_list(wards_data)
+        except Exception as e:
+            print(f"[ANALYSIS SCREEN] Could not load ward list: {e}")
+
+    @QtCore.Slot(object)
+    def set_forecaster(self, forecaster) -> None:
+        """Matches the worker slot signature used by DashboardScreen and ForecastScreen."""
+        self.set_controller(DashboardController(forecaster))
+    
