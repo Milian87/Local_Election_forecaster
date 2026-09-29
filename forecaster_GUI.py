@@ -374,9 +374,12 @@ class DashboardScreen(BaseScreen):
         top_left_layout.addWidget(self.level_combo_box)
 
         # Summary Table
-        self.summary_table = TransparentTableWidget(
-            ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
-        )
+        self.summary_table = QtWidgets.QTableWidget()
+        self.summary_table.setColumnCount(4)
+        self.summary_table.setHorizontalHeaderLabels(["Council", "Current Largest Party", "Forecasted Winner", "Expected Seat Gains"])
+        self.summary_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.summary_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.summary_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         top_left_layout.addWidget(self.summary_table, 1)
 
         main_layout.addWidget(top_left_container, 0, 0)  # Row 0, Col 0
@@ -417,9 +420,12 @@ class DashboardScreen(BaseScreen):
         bottom_left_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         bottom_left_layout = QtWidgets.QVBoxLayout(bottom_left_container)
 
-        self.vote_share_table = TransparentTableWidget(
-            ["Party", "National Vote Share", "Seats"]
-        )
+        self.vote_share_table = QtWidgets.QTableWidget()
+        self.vote_share_table.setColumnCount(3)
+        self.vote_share_table.setHorizontalHeaderLabels(["Party", "National Vote Share", "Seats"])
+        self.vote_share_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.vote_share_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.vote_share_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         bottom_left_layout.addWidget(self.vote_share_table, 1)
 
         main_layout.addWidget(bottom_left_container, 1, 0)  # Row 1, Col 0
@@ -559,16 +565,17 @@ class ForecastScreen(BaseScreen):
         self.selector_layout.addWidget(self.division_selector)
 
         # Summary Table
-        self.summary_table = TransparentTableWidget(
-            ["Council", "Current Largest Party", "Forecasted Winner", "Seats Gained"]
-        )
-        top_left_layout.addWidget(self.summary_table, 1)
-        self.summary_table.cellClicked.connect(self._focus_map_from_table)
+        self.ward_table = QtWidgets.QTableWidget()
+        self.ward_table.setColumnCount(5)
+        self.ward_table.setHorizontalHeaderLabels(["Council", "Division", "Current Councilor", "Party", "Forecast"])
+        self.ward_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.ward_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.ward_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        top_left_layout.addWidget(self.ward_table, 1)
+        self.ward_table.cellClicked.connect(self._focus_map_from_table)
 
         # Make the left column span both row 0 and row 1
         main_layout.addWidget(top_left_container, 0, 0, 2, 1)  # (Row 0, Col 0, span 2 rows, span 1 col)
-
-
 
         # ==========================================
         # QUADRANT 2: TOP-RIGHT (Interactive Map)
@@ -605,10 +612,13 @@ class ForecastScreen(BaseScreen):
         bottom_right_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         ward_forecast_layout = QtWidgets.QVBoxLayout(bottom_right_container)
 
-        self.ward_forecast_table = TransparentTableWidget(
-            ["Candidate", "Party", "Current Share", "Forecast Share"]
-        )
-        ward_forecast_layout.addWidget(self.ward_forecast_table)
+        self.results_table = QtWidgets.QTableWidget()
+        self.results_table.setColumnCount(4)
+        self.results_table.setHorizontalHeaderLabels(["Candidate", "Party", "Vote Share", "Forecasted Share"])
+        self.results_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        ward_forecast_layout.addWidget(self.results_table)
 
         main_layout.addWidget(bottom_right_container, 1, 1)  # Row 1, Col 1
 
@@ -633,12 +643,12 @@ class ForecastScreen(BaseScreen):
             division_forecasts = division_forecasts[
                 division_forecasts["council"].astype(str).str.strip() == str(selected_council).strip()
             ].copy()
-        self.summary_table.setColumnCount(5)
-        self.summary_table.setHorizontalHeaderLabels(
-            ["Council", "Division", "Current Councillor", "", "Forecasted Party"]
+        self.ward_table.setColumnCount(5)
+        self.ward_table.setHorizontalHeaderLabels(
+            ["Council", "Division", "Current Councillor", "Current", "Forecasted Party"]
         )
-        self.summary_table.setRowCount(len(division_forecasts))
-        self.ward_forecast_table.setRowCount(0)
+        self.ward_table.setRowCount(len(division_forecasts))
+        self.results_table.setRowCount(0)
         for row_index, (_, row) in enumerate(division_forecasts.iterrows()):
             values = [
                 str(row["council"]),
@@ -656,9 +666,9 @@ class ForecastScreen(BaseScreen):
                     item.setBackground(QtGui.QBrush(color))
                     item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                     item.setToolTip(party)
-                self.summary_table.setItem(row_index, column_index, item)
+                self.ward_table.setItem(row_index, column_index, item)
 
-        self.summary_table.resizeColumnsToContents()
+        self.ward_table.resizeColumnsToContents()
         self._division_forecasts = division_forecasts
 
     def _council_selection_changed(self) -> None:
@@ -672,7 +682,7 @@ class ForecastScreen(BaseScreen):
             filtered = all_divisions
 
         self._division_forecasts = filtered
-        self.summary_table.setRowCount(len(filtered))
+        self.ward_table.setRowCount(len(filtered))
         for row_index, (_, row) in enumerate(filtered.iterrows()):
             values = [
                 str(row["council"]),
@@ -690,8 +700,8 @@ class ForecastScreen(BaseScreen):
                     item.setBackground(QtGui.QBrush(color))
                     item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                     item.setToolTip(party)
-                self.summary_table.setItem(row_index, column_index, item)
-        self.summary_table.resizeColumnsToContents()
+                self.ward_table.setItem(row_index, column_index, item)
+        self.ward_table.resizeColumnsToContents()
         self.refresh_map(focus_council=selected_council or None)
 
     def _level_selection_changed(self) -> None:
@@ -711,11 +721,11 @@ class ForecastScreen(BaseScreen):
 
     def populate_council_results(self, council_name: str) -> None:
         results = self.controller.get_council_results(council_name)  # type: ignore
-        self.ward_forecast_table.setHorizontalHeaderLabels(
+        self.results_table.setHorizontalHeaderLabels(
             ["Party", "Current Seats", "Forecast Seats", "Seats Gained"]
         )
-        self.ward_forecast_table.setColumnCount(4)
-        self.ward_forecast_table.setRowCount(len(results))
+        self.results_table.setColumnCount(4)
+        self.results_table.setRowCount(len(results))
         for row_index, (_, row) in enumerate(results.iterrows()):
             values = [
                 str(row["party"]),
@@ -724,25 +734,25 @@ class ForecastScreen(BaseScreen):
                 f"{int(row['seats_gained']):+d}",
             ]
             for column_index, value in enumerate(values):
-                self.ward_forecast_table.setItem(
+                self.results_table.setItem(
                     row_index,
                     column_index,
                     QtWidgets.QTableWidgetItem(value),
                 )
-        self.ward_forecast_table.resizeColumnsToContents()
+        self.results_table.resizeColumnsToContents()
 
     def populate_division_results(self, division_code: str) -> None:
         results = self.controller.get_division_results(division_code)  # type: ignore
-        self.ward_forecast_table.setHorizontalHeaderLabels(
+        self.results_table.setHorizontalHeaderLabels(
             ["Candidate", "Party", "Current Share", "Forecast Share"]
         )
-        self.ward_forecast_table.setColumnCount(4)
+        self.results_table.setColumnCount(4)
         if results.empty:
-            self.ward_forecast_table.setRowCount(0)
+            self.results_table.setRowCount(0)
             return
 
         results = results.sort_values("final_forecast_share", ascending=False)
-        self.ward_forecast_table.setRowCount(len(results))
+        self.results_table.setRowCount(len(results))
         for row_index, (_, row) in enumerate(results.iterrows()):
             values = [
                 str(row.get("candidate_name", "")),
@@ -751,12 +761,12 @@ class ForecastScreen(BaseScreen):
                 f"{float(row.get('final_forecast_share', 0.0)):.1f}%",
             ]
             for column_index, value in enumerate(values):
-                self.ward_forecast_table.setItem(
+                self.results_table.setItem(
                     row_index,
                     column_index,
                     QtWidgets.QTableWidgetItem(value),
                 )
-        self.ward_forecast_table.resizeColumnsToContents()
+        self.results_table.resizeColumnsToContents()
 
     def set_controller(self, controller) -> None:
         self.controller = controller
