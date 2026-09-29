@@ -108,7 +108,7 @@ class ForecastApp:
         
         screen_widgets["Dashboard"].set_forecast_loading(True)
         screen_widgets["Forecast"].set_forecast_loading(True)
-        screen_widgets["Analysis"].set_forecast_loading(True)
+      #  screen_widgets["Analysis"].set_forecast_loading(True)
         
         self.main_window.set_reforecast_enabled(False)
         self._start_forecast_worker(

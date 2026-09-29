@@ -6,6 +6,7 @@
 # Created: 26/8/2026
 # This file contains the GUI definitions for the election forecaster application.
 
+import code
 import sys
 from pathlib import Path
 import pandas as pd
@@ -963,11 +964,14 @@ class AnalysisScreen(BaseScreen):
 
     def populate_ward_list(self, wards_data):
         self.ward_table.setRowCount(len(wards_data))
-        for row_idx, (council, division, wd_code) in enumerate(wards_data):
+        for row_idx, (council, division, councillor, party, forecast) in enumerate(wards_data):
             self.ward_table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(str(council)))
             self.ward_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(str(division)))
-            self.ward_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(str(wd_code)))
-        self.ward_table.setColumnHidden(2, True)
+            self.ward_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(str(councillor)))
+            self.ward_table.setItem(row_idx, 3, QtWidgets.QTableWidgetItem(str(party)))
+            self.ward_table.setItem(row_idx, 4, QtWidgets.QTableWidgetItem(str(forecast)))
+        
+        self.ward_table.setColumnHidden(4, False) # Keep forecast visible or format as needed
 
     def populate_ward_results(self, ward_name, candidates_data):
         self.btn_results_view.setText(f"Results: {ward_name}")
@@ -997,16 +1001,17 @@ class AnalysisScreen(BaseScreen):
             return
         
         try:
-            # Gets the exact same DataFrame used by ForecastScreen
             division_forecasts = self.controller.get_division_forecasts()
             if division_forecasts is not None and not division_forecasts.empty:
-                # Transform DataFrame rows into tuples: (council, division, division_code)
                 wards_data = []
                 for _, row in division_forecasts.iterrows():
                     council = str(row.get("council", ""))
                     division = str(row.get("division", ""))
-                    code = str(row.get("division_code", ""))
-                    wards_data.append((council, division, code))
+                    councillor = str(row.get("current_councillor", ""))
+                    party = str(row.get("incumbent_party", ""))
+                    forecast = str(row.get("forecasted_party", ""))
+                    # Append all 5 required fields matching your 5 table columns
+                    wards_data.append((council, division, councillor, party, forecast))
                 
                 self.populate_ward_list(wards_data)
         except Exception as e:
