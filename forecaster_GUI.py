@@ -510,14 +510,14 @@ class DashboardScreen(BaseScreen):
 
 class ForecastScreen(BaseScreen):
     incumbent_party_colors = {
-        "Reform UK": "#00c3d9cd",
-        "Liberal Democrats": "#FDBB30cd",
-        "Green Party": "#00a85acd",
-        "Conservative": "#0087dccd",
-        "Labour": "#d50000cd",
-        "Independent": "#F598E5cd",
-        "Great Yarmouth First": "#000080cd",
-        "Restore Britain": "#000080cd",
+        "Reform UK": "#00c3d9",
+        "Liberal Democrats": "#FDBB30",
+        "Green Party": "#00a85a",
+        "Conservative": "#0087dc",
+        "Labour": "#d50000",
+        "Independent": "#F598E5",
+        "Great Yarmouth First": "#000080",
+        "Restore Britain": "#000080",
     }
 
     def __init__(self, controller=None, parent=None):
@@ -654,7 +654,7 @@ class ForecastScreen(BaseScreen):
                 str(row["council"]),
                 str(row["division"]),
                 str(row["current_councillor"]),
-                str(row["incumbent_party"]),
+                "",
                 str(row["forecasted_party"]),
             ]
             for column_index, value in enumerate(values):
@@ -667,8 +667,6 @@ class ForecastScreen(BaseScreen):
                     item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                     item.setToolTip(party)
                 self.ward_table.setItem(row_index, column_index, item)
-
-        self.ward_table.setHorizontalHeaderLabels(["Council", "Division", "Current Councillor", "Current Party", "Forecasted Party"])
 
         self.ward_table.resizeColumnsToContents()
         self._division_forecasts = division_forecasts
@@ -690,7 +688,7 @@ class ForecastScreen(BaseScreen):
                 str(row["council"]),
                 str(row["division"]),
                 str(row["current_councillor"]),
-                str(row["incumbent_party"]),
+                "",
                 str(row["forecasted_party"]),
             ]
             for column_index, value in enumerate(values):
