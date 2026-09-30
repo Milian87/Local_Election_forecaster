@@ -22,6 +22,8 @@ from widgets import (
 )
 from widgets import TransparentTableWidget
 import forecaster_MapOrchestrator as map_orchestrator
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+import matplotlib.pyplot as plt
 
 # ==========================================
 # GLOBAL UI THEME CONFIGURATION
@@ -850,11 +852,10 @@ class AnalysisScreen(BaseScreen):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
         
-        # Configure row and column stretch so quadrants resize nicely proportionally
-        main_layout.setRowStretch(0, 1)  # Top row (Tables & Map)
-        main_layout.setRowStretch(1, 1)  # Bottom row (Polls & SHAP charts)
-        main_layout.setColumnStretch(0, 1)  # Left column (Tables & Polls)
-        main_layout.setColumnStretch(1, 1)  # Right column (Map & SHAP charts)
+        main_layout.setRowStretch(0, 1)
+        main_layout.setRowStretch(1, 1)
+        main_layout.setColumnStretch(0, 1)
+        main_layout.setColumnStretch(1, 1)
         
         # ==========================================
         # QUADRANT 1: TOP-LEFT (Navigation & Tables Stack)
@@ -863,18 +864,17 @@ class AnalysisScreen(BaseScreen):
         top_left_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         top_left_layout = QtWidgets.QVBoxLayout(top_left_container)
         
-        # Segmented Navigation Header
         nav_layout = QtWidgets.QHBoxLayout()
         nav_layout.setSpacing(4)
-        # add a combo box for choosing between county and district
+        
         self.view_selector = QtWidgets.QComboBox()
         self.view_selector.addItem("County", "county")
         self.view_selector.addItem("District", "district")
-        # add a combo box for choosing which county or district to view
+        
         self.region_selector = QtWidgets.QComboBox()
         nav_layout.addWidget(self.region_selector)
         nav_layout.addWidget(self.view_selector)
-        nav_layout.addWidget(self.view_selector)
+        
         self.btn_select_view = QtWidgets.QPushButton("Select Ward")
         self.btn_results_view = QtWidgets.QPushButton("Ward Results")
         
@@ -915,13 +915,14 @@ class AnalysisScreen(BaseScreen):
         
         self.results_table = QtWidgets.QTableWidget()
         self.results_table.setColumnCount(4)
-        self.results_table.setHorizontalHeaderLabels(["Candidate","Party", "Current %", "Forecast %"])
+        self.results_table.setHorizontalHeaderLabels(["Candidate", "Party", "Current %", "Forecast %"])
         self.results_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.results_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.stack.addWidget(self.results_table)
         
         top_left_layout.addWidget(self.stack)
-        main_layout.addWidget(top_left_container, 0, 0)  # Row 0, Col 0
+        main_layout.addWidget(top_left_container, 0, 0)
         
         # ==========================================
         # QUADRANT 2: TOP-RIGHT (Interactive Map)
@@ -933,8 +934,7 @@ class AnalysisScreen(BaseScreen):
         map_placeholder = QtWidgets.QLabel("Interactive Map View (Top-Right)")
         map_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.top_right_layout.addWidget(map_placeholder)
-        
-        main_layout.addWidget(top_right_container, 0, 1)  # Row 0, Col 1
+        main_layout.addWidget(top_right_container, 0, 1)
         
         # ==========================================
         # QUADRANT 3: BOTTOM-LEFT (Local / National Polls Graph)
@@ -946,8 +946,7 @@ class AnalysisScreen(BaseScreen):
         polls_placeholder = QtWidgets.QLabel("National & Ward Polling Trend Graph (Bottom-Left)")
         polls_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.bottom_left_layout.addWidget(polls_placeholder)
-        
-        main_layout.addWidget(bottom_left_container, 1, 0)  # Row 1, Col 0
+        main_layout.addWidget(bottom_left_container, 1, 0)
         
         # ==========================================
         # QUADRANT 4: BOTTOM-RIGHT (SHAP Explainability Chart)
@@ -956,16 +955,39 @@ class AnalysisScreen(BaseScreen):
         bottom_right_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         self.bottom_right_layout = QtWidgets.QVBoxLayout(bottom_right_container)
         
-        shap_placeholder = QtWidgets.QLabel("SHAP Spatial Impact & Dependence Chart (Bottom-Right)")
-        shap_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.bottom_right_layout.addWidget(shap_placeholder)
+        self.shap_canvas_container = QtWidgets.QWidget()
+        self.shap_layout = QtWidgets.QVBoxLayout(self.shap_canvas_container)
+        self.bottom_right_layout.addWidget(self.shap_canvas_container)
+        main_layout.addWidget(bottom_right_container, 1, 1)
         
-        main_layout.addWidget(bottom_right_container, 1, 1)  # Row 1, Col 1
+        self.show_default_shap_chart()
         
-        # Connect navigation buttons
         self.btn_select_view.clicked.connect(lambda: self.switch_view(0))
         self.btn_results_view.clicked.connect(lambda: self.switch_view(1))
         self.ward_table.cellClicked.connect(self.on_ward_row_clicked)
+
+    def show_default_shap_chart(self):
+        fig, ax = plt.subplots(figsize=(5, 3))
+        ax.set_facecolor("none")
+        fig.patch.set_facecolor("none")
+        ax.text(0.5, 0.5, "Select a ward to view spatial SHAP impact", 
+                horizontalalignment='center', verticalalignment='center', 
+                transform=ax.transAxes, color='white', fontweight='bold')
+        ax.axis('off')
+        self.set_shap_figure(fig)
+
+    def set_shap_figure(self, fig):
+        while self.shap_layout.count():
+            child = self.shap_layout.takeAt(0)
+            if child is not None:
+                widget = child.widget()
+                if widget is not None:
+                    widget.deleteLater()
+                
+        canvas = FigureCanvasQTAgg(fig)
+        canvas.setStyleSheet("background-color: transparent;")
+        self.shap_layout.addWidget(canvas)
+        canvas.draw()
 
     def switch_view(self, index):
         self.stack.setCurrentIndex(index)
@@ -974,14 +996,21 @@ class AnalysisScreen(BaseScreen):
 
     def populate_ward_list(self, wards_data):
         self.ward_table.setRowCount(len(wards_data))
-        for row_idx, (council, division, councillor, party, forecast) in enumerate(wards_data):
-            self.ward_table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(str(council)))
-            self.ward_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(str(division)))
-            self.ward_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(str(councillor)))
-            self.ward_table.setItem(row_idx, 3, QtWidgets.QTableWidgetItem(str(party)))
-            self.ward_table.setItem(row_idx, 4, QtWidgets.QTableWidgetItem(str(forecast)))
-        
-        self.ward_table.setColumnHidden(4, False) # Keep forecast visible or format as needed
+        for row_idx, (council, division, councillor, party, forecast, division_code) in enumerate(wards_data):
+            item_council = QtWidgets.QTableWidgetItem(str(council))
+            item_division = QtWidgets.QTableWidgetItem(str(division))
+            item_councillor = QtWidgets.QTableWidgetItem(str(councillor))
+            item_party = QtWidgets.QTableWidgetItem(str(party))
+            item_forecast = QtWidgets.QTableWidgetItem(str(forecast))
+            
+            # Store the division code secretly in the UserRole data of the division cell
+            item_division.setData(QtCore.Qt.ItemDataRole.UserRole, str(division_code))
+            
+            self.ward_table.setItem(row_idx, 0, item_council)
+            self.ward_table.setItem(row_idx, 1, item_division)
+            self.ward_table.setItem(row_idx, 2, item_councillor)
+            self.ward_table.setItem(row_idx, 3, item_party)
+            self.ward_table.setItem(row_idx, 4, item_forecast)
 
     def populate_ward_results(self, ward_name, candidates_data):
         self.btn_results_view.setText(f"Results: {ward_name}")
@@ -996,20 +1025,149 @@ class AnalysisScreen(BaseScreen):
 
     def on_ward_row_clicked(self, row, column):
         division_item = self.ward_table.item(row, 1)
-        code_item = self.ward_table.item(row, 2)
-        if division_item and code_item:
-            self.wardSelected.emit(code_item.text(), division_item.text())
-    
+        if division_item:
+            ward_name = division_item.text()
+            division_code = division_item.data(QtCore.Qt.ItemDataRole.UserRole)
+            self.wardSelected.emit(division_code, ward_name)
+            
+            # Pass the active forecaster instance safely
+            if self.controller is not None and hasattr(self.controller, "data_source"):
+                forecaster_instance = getattr(self.controller, "data_source", None)
+                if forecaster_instance is not None and hasattr(forecaster_instance, "explainer"):
+                    self.display_ward_shap(forecaster_instance, ward_name)
+
+    def display_ward_shap(self, forecaster, ward_name, feature_name="top_2"):
+        """Generates and displays the SHAP explanation chart for a specific ward."""
+        try:
+            # 1. Check if forecaster has an explainer ready
+            explainer = getattr(forecaster, "explainer", None)
+            if explainer is None:
+                # Softmax or uninitialized models won't have TreeExplainer
+                return
+
+            # 2. Safely find whichever feature DataFrame exists on the forecaster
+            df_features = None
+            for attr in (
+                "latest_features",
+                "X",
+                "training_matrix",
+                "forecast_df",
+                "df",
+            ):
+                val = getattr(forecaster, attr, None)
+                if isinstance(val, pd.DataFrame) and not val.empty:
+                    df_features = val
+                    break
+
+            # 3. Locate the ward row if feature dataframe exists
+            top_features, top_values = None, None
+
+            if hasattr(forecaster, "get_shap_values_for_ward"):
+                top_features, top_values = forecaster.get_shap_values_for_ward(
+                    ward_name
+                )
+
+            elif df_features is not None:
+                # Wrap OR conditions in parentheses to avoid NoneType evaluation
+                col = None
+                for c in ("ward_name", "division", "CED25NM", "CED26NM", "Name"):
+                    if c in df_features.columns:
+                        col = c
+                        break
+
+                if col is not None:
+                    ward_row = df_features[
+                        df_features[col].astype(str).str.strip().str.lower()
+                        == str(ward_name).strip().lower()
+                    ]
+
+                    if not ward_row.empty:
+                        # Exclude non-numeric and metadata columns
+                        non_feature_cols = [
+                            "wd_code",
+                            "ward_name",
+                            "division",
+                            "division_code",
+                            "party_label",
+                            "council",
+                            "geometry",
+                        ]
+                        feature_row = ward_row.drop(
+                            columns=[
+                                c
+                                for c in non_feature_cols
+                                if c in ward_row.columns
+                            ]
+                        )
+                        # Keep only numeric columns
+                        feature_row = feature_row.select_dtypes(
+                            include=["number"]
+                        )
+
+                        if not feature_row.empty:
+                            shap_output = explainer(feature_row)
+                            raw_vals = (
+                                shap_output.values
+                                if hasattr(shap_output, "values")
+                                else shap_output
+                            )
+                            # Handle 2D or 3D SHAP outputs (samples, features, [classes])
+                            if hasattr(raw_vals, "ndim") and raw_vals.ndim == 3:
+                                vals = raw_vals[0, :, 0]
+                            elif (
+                                hasattr(raw_vals, "ndim")
+                                and raw_vals.ndim == 2
+                            ):
+                                vals = raw_vals[0]
+                            else:
+                                vals = raw_vals
+
+                            import numpy as np
+
+                            cols = feature_row.columns.tolist()
+                            top_k = min(8, len(cols))
+                            top_idx = np.argsort(np.abs(vals))[-top_k:]
+
+                            top_features = [cols[i] for i in top_idx]
+                            top_values = [vals[i] for i in top_idx]
+
+            # 4. Fallback rendering if values could not be computed
+            if not top_features or not top_values:
+                return
+
+            # 5. Render to matplotlib canvas
+            fig, ax = plt.subplots(figsize=(6, 4))
+            fig.patch.set_facecolor("none")
+            ax.set_facecolor("none")
+
+            colors = ["#00c3d9" if v >= 0 else "#d50000" for v in top_values]
+            ax.barh(top_features, top_values, color=colors)
+            ax.set_title(
+                f"SHAP Feature Impact: {ward_name}",
+                color="white",
+                fontsize=11,
+                fontweight="bold",
+            )
+            ax.tick_params(colors="white", labelsize=9)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.spines["left"].set_color("#888888")
+            ax.spines["bottom"].set_color("#888888")
+            plt.tight_layout()
+
+            self.set_shap_figure(fig)
+
+        except Exception as e:
+            print(f"[SHAP UI] Could not render SHAP chart: {e}")
+
+
     def set_controller(self, controller) -> None:
-        """Allows the controller to be injected or updated, matching Forecast/Dashboard screens."""
         self.controller = controller
         self.populate_from_controller()
 
     def populate_from_controller(self):
-        """Fetches division forecasts using the same source as the Forecast screen."""
         if self.controller is None:
             return
-        
         try:
             division_forecasts = self.controller.get_division_forecasts()
             if division_forecasts is not None and not division_forecasts.empty:
@@ -1020,8 +1178,8 @@ class AnalysisScreen(BaseScreen):
                     councillor = str(row.get("current_councillor", ""))
                     party = str(row.get("incumbent_party", ""))
                     forecast = str(row.get("forecasted_party", ""))
-                    # Append all 5 required fields matching your 5 table columns
-                    wards_data.append((council, division, councillor, party, forecast))
+                    code = str(row.get("division_code", ""))
+                    wards_data.append((council, division, councillor, party, forecast, code))
                 
                 self.populate_ward_list(wards_data)
         except Exception as e:
@@ -1029,6 +1187,4 @@ class AnalysisScreen(BaseScreen):
 
     @QtCore.Slot(object)
     def set_forecaster(self, forecaster) -> None:
-        """Matches the worker slot signature used by DashboardScreen and ForecastScreen."""
         self.set_controller(DashboardController(forecaster))
-    
