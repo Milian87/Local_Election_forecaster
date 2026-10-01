@@ -378,7 +378,7 @@ class DashboardScreen(BaseScreen):
         # Level selector combo box
         self.level_combo_box = QtWidgets.QComboBox()
         self.level_combo_box.addItems(["District / Unitary", "County 2026", "County 2025"])
-        self.level_combo_box.setCurrentText("County 2026")
+        self.level_combo_box.setCurrentText("County 2025")
         self.level_combo_box.currentIndexChanged.connect(lambda: self.refresh_map())
         top_left_layout.addWidget(self.level_combo_box)
 
@@ -557,7 +557,7 @@ class ForecastScreen(BaseScreen):
 
         self.level_combo_box = QtWidgets.QComboBox()
         self.level_combo_box.addItems(["District / Unitary", "County 2026", "County 2025"])
-        self.level_combo_box.setCurrentText("County 2026")
+        self.level_combo_box.setCurrentText("County 2025")
         self.level_combo_box.currentIndexChanged.connect(self._level_selection_changed)
         self.selector_layout.addWidget(self.level_combo_box)
 

@@ -175,12 +175,25 @@ class CouncilMapOrchestrator(BaseMapOrchestrator):
         ]
         return next((path for path in candidates if path.is_file()), None)
 
+    @staticmethod
+    def _ced_2026_to_2025_crosswalk() -> pd.DataFrame | None:
+        # Best-fit geometric crosswalk for divisions redrawn in the 2026 boundary review.
+        path = Path(__file__).parent / "data" / "Lookups" / "CED_2025_to_2026_Best_Fit_Lookup.csv"
+        if not path.is_file():
+            return None
+        crosswalk = pd.read_csv(path)[["CED25CD", "CED26CD"]]
+        return crosswalk.sort_values("CED25CD").drop_duplicates("CED26CD", keep="first")
+
     def generate(self, forecast_df):
         gdf = self.load_geodata()
         division_code_column = next(
             (column for column in ("CED26CD", "CED25CD") if column in gdf.columns),
             None,
         )
+        if division_code_column == "CED26CD" and "CED25CD" not in gdf.columns:
+            crosswalk = self._ced_2026_to_2025_crosswalk()
+            if crosswalk is not None:
+                gdf = gdf.merge(crosswalk, on="CED26CD", how="left")
         if division_code_column and not any(
             column in gdf.columns for column in ("CTY25NM", "LAD25NM", "CTY26NM", "LAD26NM")
         ):
@@ -193,9 +206,11 @@ class CouncilMapOrchestrator(BaseMapOrchestrator):
                     "CTY25CD", "CTY25NM", "LAD25CD", "LAD25NM"
                 ) if column in lookup.columns]
                 lookup = lookup[use_columns].drop_duplicates(code_column)
+                # Prefer the 2025 code (native or crosswalked) since the lookup is 2025-vintage.
+                join_column = "CED25CD" if "CED25CD" in gdf.columns else division_code_column
                 gdf = gdf.merge(
                     lookup,
-                    left_on=division_code_column,
+                    left_on=join_column,
                     right_on=code_column,
                     how="left",
                     suffixes=("", "_lookup"),
@@ -203,7 +218,7 @@ class CouncilMapOrchestrator(BaseMapOrchestrator):
         gdf = self._attach_forecast_winners(
             gdf,
             forecast_df,
-            ("WD26CD", "WD26NM", "WD25CD", "WD25NM", "CED25CD", "CED25NM"),
+            ("WD26CD", "WD26NM", "WD25CD", "WD25NM", "CED25CD", "CED25NM", "CED26CD", "CED26NM"),
         )
         county_name_column = next(
             (column for column in ("CTY26NM", "CTY25NM") if column in gdf.columns),
