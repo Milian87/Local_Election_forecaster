@@ -9,6 +9,7 @@
 import code
 import sys
 from pathlib import Path
+import numpy as np
 import pandas as pd
 from PySide6 import QtCore, QtGui
 import PySide6.QtWidgets as QtWidgets
@@ -958,6 +959,17 @@ class AnalysisScreen(BaseScreen):
         self.shap_canvas_container = QtWidgets.QWidget()
         self.shap_layout = QtWidgets.QVBoxLayout(self.shap_canvas_container)
         self.bottom_right_layout.addWidget(self.shap_canvas_container)
+
+        # Static legend; kept outside shap_layout so chart redraws don't clear it.
+        self.shap_description_label = QtWidgets.QLabel(
+            "Each bar is a model feature (e.g. historical party share, demographics, polling). "
+            "Bar length = SHAP value, the size of that feature's effect on this ward's forecast. "
+            "Blue bars pushed the forecast share up; red bars pushed it down. "
+            "Click a ward on the left to update this chart."
+        )
+        self.shap_description_label.setWordWrap(True)
+        self.shap_description_label.setStyleSheet("color: #dddddd; font-size: 10px; padding: 4px;")
+        self.bottom_right_layout.addWidget(self.shap_description_label)
         main_layout.addWidget(bottom_right_container, 1, 1)
         
         self.show_default_shap_chart()
@@ -1029,119 +1041,65 @@ class AnalysisScreen(BaseScreen):
             ward_name = division_item.text()
             division_code = division_item.data(QtCore.Qt.ItemDataRole.UserRole)
             self.wardSelected.emit(division_code, ward_name)
-            
+
+            print(f"Selected ward: {ward_name} with division code: {division_code}")
+
             # Pass the active forecaster instance safely
             if self.controller is not None and hasattr(self.controller, "data_source"):
                 forecaster_instance = getattr(self.controller, "data_source", None)
                 if forecaster_instance is not None and hasattr(forecaster_instance, "explainer"):
-                    self.display_ward_shap(forecaster_instance, ward_name)
+                    self.display_ward_shap(forecaster_instance, ward_name, division_code)
 
-    def display_ward_shap(self, forecaster, ward_name, feature_name="top_2"):
+    def display_ward_shap(self, forecaster, ward_name, wd_code=None, feature_count=8):
         """Generates and displays the SHAP explanation chart for a specific ward."""
         try:
-            # 1. Check if forecaster has an explainer ready
             explainer = getattr(forecaster, "explainer", None)
-            if explainer is None:
-                # Softmax or uninitialized models won't have TreeExplainer
+            feature_matrix = getattr(forecaster, "X_train_features", None)
+            future_data = getattr(forecaster, "future_data", None)
+            if explainer is None or feature_matrix is None or future_data is None or future_data.empty:
+                # Softmax/hybrid or uninitialized models won't have a ready TreeExplainer
                 return
 
-            # 2. Safely find whichever feature DataFrame exists on the forecaster
-            df_features = None
-            for attr in (
-                "latest_features",
-                "X",
-                "training_matrix",
-                "forecast_df",
-                "df",
-            ):
-                val = getattr(forecaster, attr, None)
-                if isinstance(val, pd.DataFrame) and not val.empty:
-                    df_features = val
-                    break
-
-            # 3. Locate the ward row if feature dataframe exists
-            top_features, top_values = None, None
-
-            if hasattr(forecaster, "get_shap_values_for_ward"):
-                top_features, top_values = forecaster.get_shap_values_for_ward(
-                    ward_name
+            # Resolve the division's wd_code directly, falling back to the ward-name map
+            matched_code = str(wd_code) if wd_code else None
+            if not matched_code:
+                ward_name_map = getattr(forecaster, "ward_name_map", {}) or {}
+                target = str(ward_name).strip().casefold()
+                matched_code = next(
+                    (code for code, name in ward_name_map.items() if str(name).strip().casefold() == target),
+                    None,
                 )
-
-            elif df_features is not None:
-                # Wrap OR conditions in parentheses to avoid NoneType evaluation
-                col = None
-                for c in ("ward_name", "division", "CED25NM", "CED26NM", "Name"):
-                    if c in df_features.columns:
-                        col = c
-                        break
-
-                if col is not None:
-                    ward_row = df_features[
-                        df_features[col].astype(str).str.strip().str.lower()
-                        == str(ward_name).strip().lower()
-                    ]
-
-                    if not ward_row.empty:
-                        # Exclude non-numeric and metadata columns
-                        non_feature_cols = [
-                            "wd_code",
-                            "ward_name",
-                            "division",
-                            "division_code",
-                            "party_label",
-                            "council",
-                            "geometry",
-                        ]
-                        feature_row = ward_row.drop(
-                            columns=[
-                                c
-                                for c in non_feature_cols
-                                if c in ward_row.columns
-                            ]
-                        )
-                        # Keep only numeric columns
-                        feature_row = feature_row.select_dtypes(
-                            include=["number"]
-                        )
-
-                        if not feature_row.empty:
-                            shap_output = explainer(feature_row)
-                            raw_vals = (
-                                shap_output.values
-                                if hasattr(shap_output, "values")
-                                else shap_output
-                            )
-                            # Handle 2D or 3D SHAP outputs (samples, features, [classes])
-                            if hasattr(raw_vals, "ndim") and raw_vals.ndim == 3:
-                                vals = raw_vals[0, :, 0]
-                            elif (
-                                hasattr(raw_vals, "ndim")
-                                and raw_vals.ndim == 2
-                            ):
-                                vals = raw_vals[0]
-                            else:
-                                vals = raw_vals
-
-                            import numpy as np
-
-                            cols = feature_row.columns.tolist()
-                            top_k = min(8, len(cols))
-                            top_idx = np.argsort(np.abs(vals))[-top_k:]
-
-                            top_features = [cols[i] for i in top_idx]
-                            top_values = [vals[i] for i in top_idx]
-
-            # 4. Fallback rendering if values could not be computed
-            if not top_features or not top_values:
+            if not matched_code:
                 return
 
-            # 5. Render to matplotlib canvas
+            ward_rows = future_data[future_data["wd_code"].astype(str) == matched_code]
+            if ward_rows.empty:
+                return
+
+            # Use the exact training feature columns so the explainer receives a matching shape
+            feature_row = ward_rows[feature_matrix.columns].astype(float)
+            shap_output = explainer.shap_values(feature_row)
+            raw_values = shap_output[0] if isinstance(shap_output, list) else shap_output
+            values = np.asarray(raw_values)
+            if values.ndim > 1:
+                values = values.mean(axis=0)
+
+            cols = feature_row.columns.tolist()
+            top_k = min(feature_count, len(cols))
+            top_idx = np.argsort(np.abs(values))[-top_k:]
+            top_features = [cols[i] for i in top_idx]
+            top_values = [values[i] for i in top_idx]
+
+            if not top_features:
+                return
+
             fig, ax = plt.subplots(figsize=(6, 4))
             fig.patch.set_facecolor("none")
             ax.set_facecolor("none")
 
             colors = ["#00c3d9" if v >= 0 else "#d50000" for v in top_values]
-            ax.barh(top_features, top_values, color=colors)
+            friendly_labels = [self._friendly_feature_label(name) for name in top_features]
+            ax.barh(friendly_labels, top_values, color=colors)
             ax.set_title(
                 f"SHAP Feature Impact: {ward_name}",
                 color="white",
@@ -1159,6 +1117,43 @@ class AnalysisScreen(BaseScreen):
 
         except Exception as e:
             print(f"[SHAP UI] Could not render SHAP chart: {e}")
+
+    # Maps raw model feature column names to plain-English labels for non-technical users.
+    SHAP_FEATURE_LABELS = {
+        "pct_student": "% Students",
+        "pct_own_hme": "% Homeowners",
+        "pct_rent": "% Renters",
+        "pct_age_18_29": "% Aged 18-29",
+        "pct_age_30_65": "% Aged 30-65",
+        "pct_age_over_65": "% Aged 65+",
+        "pct_wk_class": "% Working Class",
+        "pct_mid_class": "% Middle Class",
+        "pct_bch": "% Degree Educated",
+        "pct_female": "% Female",
+        "pct_male": "% Male",
+        "ward_population_density": "Population Density",
+        "historical_party_ward_mean": "Party's Past Results Here",
+        "candidate_personal_historical_mean": "Candidate's Past Results",
+        "national_poll_share": "National Poll Share",
+        "top_2": "Closeness of Top 2 Parties",
+        "left_right": "Left-Right Position",
+        "wasted_vote": "Tactical/Wasted Vote Risk",
+        "election_date_ordinal": "Election Timing",
+        "current_ward_rank": "Current Local Ranking",
+        "prior_ward_rank": "Previous Local Ranking",
+        "prior_vote_share": "Previous Vote Share",
+    }
+
+    def _friendly_feature_label(self, raw_name: str) -> str:
+        """Translates a raw model feature/column name into a readable label for display."""
+        if raw_name in self.SHAP_FEATURE_LABELS:
+            return self.SHAP_FEATURE_LABELS[raw_name]
+        # One-hot encoded party columns look like "party_name_Labour"
+        if raw_name.startswith("party_name_"):
+            return raw_name.replace("party_name_", "") + " (Party)"
+        # Fallback: turn snake_case into Title Case
+        return raw_name.replace("_", " ").strip().title()
+
 
 
     def set_controller(self, controller) -> None:
