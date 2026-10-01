@@ -187,7 +187,7 @@ class PollFetcher:
         active_parties = [col for col in ["Lab", "Con", "Ref", "LD", "Grn", "RB", "Others"] if col in df.columns]
 
         if "poll_year" not in df.columns:
-            df["poll_year"] = date.today().year
+            df["poll_year"] = date.today().year  # type: ignore
         df["poll_year"] = pd.to_numeric(df["poll_year"], errors="coerce")
         df["poll_date"] = pd.to_datetime(
             df.apply(

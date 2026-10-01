@@ -138,7 +138,7 @@ def _attach_polling_features(
         last_index = poll_dates.searchsorted(as_of, side="right") - 1
         if last_index < 0:
             continue
-        latest_poll_date = poll_dates[last_index]
+        latest_poll_date = poll_dates[last_index] # type: ignore
         if as_of - latest_poll_date > pd.Timedelta(days=90):
             continue
 
@@ -153,7 +153,7 @@ def _attach_polling_features(
         for party_name, indexes in result.loc[date_rows].groupby(
             result.loc[date_rows, "party_name"].astype(str).str.strip().str.casefold()
         ).groups.items():
-            party_column = _POLL_COLUMN_BY_PARTY.get(party_name, "others")
+            party_column = _POLL_COLUMN_BY_PARTY.get(party_name, "others") # type: ignore
             values = poll_shares.get(party_column)
             if values is None:
                 continue
