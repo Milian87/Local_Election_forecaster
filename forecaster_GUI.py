@@ -7,6 +7,7 @@
 # This file contains the GUI definitions for the election forecaster application.
 
 import code
+import os
 import sys
 from pathlib import Path
 import numpy as np
@@ -841,6 +842,44 @@ class DataScreen(BaseScreen):
         layout = QtWidgets.QVBoxLayout(self)
         # Add more widgets and functionality for the Data screen here
 
+class GeminiSummaryWorker(QtCore.QObject):
+    """Runs a Gemini API call on a background thread so the UI stays responsive."""
+    completed = QtCore.Signal(str)
+    failed = QtCore.Signal(str)
+
+    def __init__(self, ward_name: str, features: list[tuple[str, float]]):
+        super().__init__()
+        self.ward_name = ward_name
+        self.features = features
+
+    def run(self):
+        try:
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                self.failed.emit("GEMINI_API_KEY environment variable is not set.")
+                return
+
+            from google import genai  # Imported lazily so the app still runs without the package
+
+            feature_lines = "\n".join(
+                f"- {label}: pushed the forecast {'UP' if value >= 0 else 'DOWN'} by {abs(value):.2f} points"
+                for label, value in self.features
+            )
+            prompt = (
+                "You are explaining a local election forecasting model's output to a non-technical reader. "
+                f"For the ward '{self.ward_name}', these factors had the largest effect on the predicted vote share:\n"
+                f"{feature_lines}\n\n"
+                "In 3-4 short sentences, give a plain-English, top-level summary of what is driving this ward's "
+                "forecast. Avoid jargon like 'SHAP' or 'feature'; speak in terms of the real-world factors listed."
+            )
+
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+            text = getattr(response, "text", None) or str(response)
+            self.completed.emit(text.strip())
+        except Exception as e:
+            self.failed.emit(f"Could not generate AI summary: {e}")
+
 class AnalysisScreen(BaseScreen):
     wardSelected = QtCore.Signal(str, str)  # Emits (wd_code, ward_name) when selected
 
@@ -932,10 +971,12 @@ class AnalysisScreen(BaseScreen):
         top_right_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         self.top_right_layout = QtWidgets.QVBoxLayout(top_right_container)
         
-        map_placeholder = QtWidgets.QLabel("Interactive Map View (Top-Right)")
-        map_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.top_right_layout.addWidget(map_placeholder)
+        self.map_placeholder = QtWidgets.QLabel("Select a ward on the left to view it on the map")
+        self.map_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.top_right_layout.addWidget(self.map_placeholder)
         main_layout.addWidget(top_right_container, 0, 1)
+        self.map_view = None
+        self._focused_division_code = None
         
         # ==========================================
         # QUADRANT 3: BOTTOM-LEFT (Local / National Polls Graph)
@@ -970,6 +1011,28 @@ class AnalysisScreen(BaseScreen):
         self.shap_description_label.setWordWrap(True)
         self.shap_description_label.setStyleSheet("color: #dddddd; font-size: 10px; padding: 4px;")
         self.bottom_right_layout.addWidget(self.shap_description_label)
+
+        self.ai_summary_button = QtWidgets.QPushButton("✨ AI Summary")
+        self.ai_summary_button.setEnabled(False)
+        self.ai_summary_button.setStyleSheet(
+            "QPushButton { background-color: #1a4d2e; color: white; border: none; "
+            "padding: 6px 10px; font-weight: bold; font-size: 11px; border-radius: 4px; } "
+            "QPushButton:disabled { background-color: #555555; color: #aaaaaa; }"
+        )
+        self.ai_summary_button.clicked.connect(self._on_ai_summary_clicked)
+        self.bottom_right_layout.addWidget(self.ai_summary_button)
+
+        self.ai_summary_label = QtWidgets.QLabel(
+            "Select a ward, then click \"AI Summary\" for a plain-English analysis of this chart."
+        )
+        self.ai_summary_label.setWordWrap(True)
+        self.ai_summary_label.setStyleSheet("color: #ffffff; font-size: 11px; padding: 4px;")
+        self.bottom_right_layout.addWidget(self.ai_summary_label)
+
+        self._last_shap_context = None
+        self._ai_thread = None
+        self._ai_worker = None
+
         main_layout.addWidget(bottom_right_container, 1, 1)
         
         self.show_default_shap_chart()
@@ -1044,11 +1107,71 @@ class AnalysisScreen(BaseScreen):
 
             print(f"Selected ward: {ward_name} with division code: {division_code}")
 
+            self.refresh_map(focus_division=division_code)
+
             # Pass the active forecaster instance safely
             if self.controller is not None and hasattr(self.controller, "data_source"):
                 forecaster_instance = getattr(self.controller, "data_source", None)
                 if forecaster_instance is not None and hasattr(forecaster_instance, "explainer"):
                     self.display_ward_shap(forecaster_instance, ward_name, division_code)
+
+    def refresh_map(self, focus_division=None) -> None:
+        """Renders the ward-level map, zoomed/highlighted on the given wd_code if provided."""
+        if self.controller is None:
+            return
+
+        self._focused_division_code = focus_division
+
+        if self.map_placeholder is not None:
+            self.top_right_layout.removeWidget(self.map_placeholder)
+            self.map_placeholder.deleteLater()
+            self.map_placeholder = None
+        if self.map_view is not None:
+            self.top_right_layout.removeWidget(self.map_view)
+            self.map_view.deleteLater()
+            self.map_view = None
+
+        boundary_path = (
+            Path(__file__).parent
+            / "data"
+            / "Borough and District Boundaries 2025"
+            / "WD_MAY_2026_UK_BFC.shp"
+        )
+        try:
+            forecast_data = self.controller.get_forecast_data()
+            self.map_orchestrator = map_orchestrator.WardMapOrchestrator(str(boundary_path))
+            self.map_view = self.map_orchestrator.generate(forecast_data, focus_division=focus_division)
+        except (OSError, ValueError, ImportError, AttributeError) as error:
+            self.map_view = QtWidgets.QLabel(f"Map unavailable: {error}")
+            self.map_view.setWordWrap(True)
+        self.top_right_layout.addWidget(self.map_view)
+
+    def _on_ai_summary_clicked(self):
+        context = self._last_shap_context
+        if not context:
+            return
+        self.ai_summary_button.setEnabled(False)
+        self.ai_summary_label.setText("Generating AI summary...")
+
+        self._ai_thread = QtCore.QThread()
+        self._ai_worker = GeminiSummaryWorker(context["ward_name"], context["features"])
+        self._ai_worker.moveToThread(self._ai_thread)
+        self._ai_thread.started.connect(self._ai_worker.run)
+        self._ai_worker.completed.connect(self._on_ai_summary_done)
+        self._ai_worker.failed.connect(self._on_ai_summary_failed)
+        self._ai_worker.completed.connect(self._ai_thread.quit)
+        self._ai_worker.failed.connect(self._ai_thread.quit)
+        self._ai_thread.finished.connect(self._ai_worker.deleteLater)
+        self._ai_thread.finished.connect(self._ai_thread.deleteLater)
+        self._ai_thread.start()
+
+    def _on_ai_summary_done(self, text: str):
+        self.ai_summary_label.setText(text)
+        self.ai_summary_button.setEnabled(True)
+
+    def _on_ai_summary_failed(self, message: str):
+        self.ai_summary_label.setText(message)
+        self.ai_summary_button.setEnabled(True)
 
     def display_ward_shap(self, forecaster, ward_name, wd_code=None, feature_count=8):
         """Generates and displays the SHAP explanation chart for a specific ward."""
@@ -1114,6 +1237,16 @@ class AnalysisScreen(BaseScreen):
             plt.tight_layout()
 
             self.set_shap_figure(fig)
+
+            # Cache the chart's data so the "AI Summary" button can analyze it on demand.
+            self._last_shap_context = {
+                "ward_name": ward_name,
+                "features": list(zip(friendly_labels, (float(v) for v in top_values))),
+            }
+            self.ai_summary_button.setEnabled(True)
+            self.ai_summary_label.setText(
+                f"Click \"AI Summary\" for a plain-English analysis of {ward_name}'s forecast."
+            )
 
         except Exception as e:
             print(f"[SHAP UI] Could not render SHAP chart: {e}")
