@@ -143,7 +143,12 @@ class MainWindow(QtWidgets.QMainWindow):
             ("17 July 2026", "2026-07-17"),
             ("24 July 2026", "2026-07-24"),
             ("31 July 2026", "2026-07-31"),
-            ("Tomorrow", "2026-09-21"),
+            (
+                "Tomorrow",
+                QtCore.QDate.currentDate()
+                .addDays(1)
+                .toString(QtCore.Qt.DateFormat.ISODate),
+            ),
         ):
             self.date_selector.addItem(label, date_value)
         self.date_selector.setCurrentIndex(self.date_selector.count() - 1)

@@ -8,6 +8,7 @@
 
 from abc import ABC, abstractmethod
 import pandas as pd
+from sqlalchemy.engine import Engine
 
 class Data_Uploader_Interface(ABC):
     @abstractmethod
@@ -47,6 +48,9 @@ class iMachineLearningInterface(ABC):
         pass
 
 class iDatabaseInterface(ABC):
+    engine: Engine
+    db_config: dict
+
     @abstractmethod
     def __init__(self, connection_string):
         pass

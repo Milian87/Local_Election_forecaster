@@ -11,6 +11,46 @@ import requests
 from io import StringIO
 from pathlib import Path
 import re
+from datetime import date
+
+from forecaster_data import get_database
+
+
+_POLL_TABLE_REQUIRED_COLUMNS = {
+    "datesconducted",
+    "pollster",
+    "area",
+    "samplesize",
+    "lab",
+    "con",
+}
+
+
+def _flatten_poll_columns(columns) -> list[str]:
+    return [
+        str(column[0] if isinstance(column, tuple) else column).strip()
+        for column in columns
+    ]
+
+
+def _is_annual_poll_table(table: pd.DataFrame) -> bool:
+    normalized = {
+        re.sub(r"[^a-z0-9]", "", column.casefold())
+        for column in _flatten_poll_columns(table.columns)
+    }
+    return _POLL_TABLE_REQUIRED_COLUMNS.issubset(normalized)
+
+
+def _extract_poll_end_date(dates_conducted: str, poll_year: int) -> str:
+    date_text = re.sub(r"\[.*?\]", "", str(dates_conducted)).strip()
+    date_text = re.sub(r"[–—−�]", "-", date_text)
+    date_part = re.split(r"\s*-\s*", date_text)[-1].strip()
+    explicit_year = re.search(r"\b20\d{2}\b", date_part)
+    if explicit_year:
+        return date_part
+    year = int(poll_year)
+    return f"{date_part} {year}"
+
 
 class PollFetcher:
     def __init__(self):
@@ -40,8 +80,30 @@ class PollFetcher:
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
                 tables = pd.read_html(StringIO(response.text))
-                recent_polls = tables[1] 
-                print("[POLL FINDER] Successfully parsed live polling table!")
+                current_year = date.today().year
+                annual_tables = [
+                    table for table in tables if _is_annual_poll_table(table)
+                ]
+                years = range(current_year, 2023, -1)
+                annual_polls = []
+                for year, table in zip(years, annual_tables):
+                    annual_table = table.copy()
+                    annual_table.columns = _flatten_poll_columns(table.columns)
+                    annual_polls.append(annual_table.assign(poll_year=year))
+
+                if not annual_polls:
+                    raise ValueError("No annual national polling tables were found.")
+                recent_polls = pd.concat(
+                    annual_polls,
+                    ignore_index=True,
+                    sort=False,
+                )
+                covered_years = list(recent_polls["poll_year"].drop_duplicates())
+                print(
+                    "[POLL FINDER] Parsed annual polling tables for "
+                    + ", ".join(map(str, covered_years))
+                    + "."
+                )
                 
                 csv_path = Path(__file__).parent / "latest_polls.csv"
                 recent_polls.to_csv(csv_path, index=False)
@@ -59,15 +121,20 @@ class PollFetcher:
     def clean_and_smooth_polls(self, latest_polls):
         df = latest_polls.copy()
         
-        # Flatten MultiIndex columns if present
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = ['_'.join(str(col).strip() for col in tup if 'Unnamed' not in str(col)) for tup in df.columns]
-        
-        if len(df.columns) >= 15:
-            df.columns = [
-                "dates_conducted", "pollster", "client", "area", "sample_size",
-                "Lab", "Con", "Ref", "LD", "Grn", "SNP", "PC", "RB", "Others", "Lead"
-            ] + list(df.columns[15:])
+        df.columns = _flatten_poll_columns(df.columns)
+        column_names = {
+            "datesconducted": "dates_conducted",
+            "dateconducted": "dates_conducted",
+            "samplesize": "sample_size",
+        }
+        df = df.rename(
+            columns={
+                column: column_names.get(
+                    re.sub(r"[^a-z0-9]", "", column.casefold()), column
+                )
+                for column in df.columns
+            }
+        )
         
         if "dates_conducted" in df.columns and "Lab" in df.columns:
             df = df.dropna(subset=["dates_conducted", "Lab"])
@@ -75,8 +142,18 @@ class PollFetcher:
         # Clean percentage strings to numeric floats
         party_cols = [col for col in ["Lab", "Con", "Ref", "LD", "Grn", "SNP", "PC", "RB", "Others"] if col in df.columns]
         for col in party_cols:
-            df[col] = df[col].astype(str).str.replace("%", "", regex=False).str.strip()
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.replace("%", "", regex=False)
+                .str.replace(",", "", regex=False)
+                .str.strip()
+            )
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+        for col in ["Lab", "Con", "Ref", "LD", "Grn", "RB", "Others"]:
+            if col not in df.columns:
+                df[col] = 0.0
             
         # England-Only Scope Adjustment: Fold regional parties (SNP, PC) into "Others"
         regional_parties = [p for p in ["SNP", "PC"] if p in df.columns]
@@ -108,15 +185,23 @@ class PollFetcher:
             df["sample_size"] = 1000
 
         active_parties = [col for col in ["Lab", "Con", "Ref", "LD", "Grn", "RB", "Others"] if col in df.columns]
-        
-        # Clean dates by removing citation brackets like [2] and parsing end dates
-        def extract_end_date(text):
-            cleaned_text = re.sub(r'\[.*?\]', '', str(text))
-            date_part = cleaned_text.split("–")[-1].strip()
-            return f"{date_part} 2026"
 
-        df["poll_date"] = pd.to_datetime(df["dates_conducted"].apply(extract_end_date), errors="coerce")
+        if "poll_year" not in df.columns:
+            df["poll_year"] = date.today().year
+        df["poll_year"] = pd.to_numeric(df["poll_year"], errors="coerce")
+        df["poll_date"] = pd.to_datetime(
+            df.apply(
+                lambda poll: _extract_poll_end_date(
+                    poll["dates_conducted"], poll["poll_year"]
+                ),
+                axis=1,
+            ),
+            errors="coerce",
+        )
         df = df.dropna(subset=["poll_date"])
+
+        # Filter to keep only polls from January 1, 2024 onwards
+        df = df[df["poll_date"] >= pd.Timestamp("2024-01-01")]
         
         # Calculate Sample-Size Weighted Mean per Exact Date
         weighted_records = []
@@ -144,7 +229,7 @@ class PollFetcher:
         smoothed_weekly = daily_aggregated.resample("D").mean().interpolate(method="linear").rolling(window=7, min_periods=1).mean().reset_index()
         smoothed_weekly["poll_date"] = smoothed_weekly["poll_date"].dt.strftime("%Y-%m-%d")
         
-        print(f"Generated {len(smoothed_weekly):,} smoothed timeline records ready for database storage.")
+        print(f"Generated {len(smoothed_weekly):,} smoothed timeline records from 2024 onwards ready for database storage.")
         
         # Safe export for smoothed CSV
         csv_path = Path(__file__).parent / "smoothed_national_polls.csv"
@@ -154,10 +239,38 @@ class PollFetcher:
             print(f"[WARNING] Could not overwrite {csv_path.name}. Please close it if open in Excel.")
             
         return smoothed_weekly
-    
+
+    def upload_to_database(self, smoothed_polls: pd.DataFrame) -> int:
+        """Replaces the national_polls table with the latest smoothed daily poll shares."""
+        if smoothed_polls is None or smoothed_polls.empty:
+            print("[POLL FINDER] No smoothed poll records to upload; skipping database write.")
+            return 0
+
+        rename_map = {
+            "Lab": "labour",
+            "Con": "conservative",
+            "Ref": "reform_uk",
+            "LD": "liberal_democrats",
+            "Grn": "green_party",
+            "RB": "restore_britain",
+            "Others": "others",
+        }
+        df = smoothed_polls.rename(columns={k: v for k, v in rename_map.items() if k in smoothed_polls.columns})
+
+        database = get_database()
+        df.to_sql("national_polls", database.engine, if_exists="replace", index=False)
+        print(f"[POLL FINDER] Uploaded {len(df):,} daily poll records to {type(database).__name__}.")
+        return len(df)
+
+    def run_pipeline(self) -> pd.DataFrame:
+        """Fetches, cleans, smooths, and uploads the latest polls in one call."""
+        self.update_latest_polls()
+        latest_polls = self.cleaned_latest_polls()
+        smoothed_polls = self.process_polls_for_database(latest_polls)
+        self.upload_to_database(smoothed_polls)
+        return smoothed_polls
+
 if __name__ == "__main__":
     pf = PollFetcher()
-    pf.update_latest_polls()
-    latest_polls = pf.cleaned_latest_polls()
-    smoothed_polls = pf.process_polls_for_database(latest_polls)
+    pf.run_pipeline()
     print("Polling pipeline completed successfully!")

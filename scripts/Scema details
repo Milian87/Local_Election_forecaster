@@ -1,0 +1,168 @@
+"table_schema","table_name","column_name","data_type","character_maximum_length","is_nullable","column_default"
+"public","candidate_aliases","alias_id","integer",NULL,"NO","nextval('candidate_aliases_alias_id_seq'::regclass)"
+"public","candidate_aliases","candidate_id","integer",NULL,"YES",NULL
+"public","candidate_aliases","alias_name","character varying",255,"YES",NULL
+"public","candidate_election_snapshots","candidate_id","integer",NULL,"NO",NULL
+"public","candidate_election_snapshots","election_year","integer",NULL,"NO",NULL
+"public","candidate_election_snapshots","total_prior_campaigns_contested","integer",NULL,"YES","0"
+"public","candidate_election_snapshots","total_prior_wins","integer",NULL,"YES","0"
+"public","candidate_election_snapshots","runs_in_current_cc_area","integer",NULL,"YES","0"
+"public","candidate_election_snapshots","is_high_profile_figure","boolean",NULL,"YES","false"
+"public","candidates","candidate_id","integer",NULL,"NO","nextval('candidates_candidate_id_seq'::regclass)"
+"public","candidates","candidate_name","character varying",255,"NO",NULL
+"public","candidates","registered_party","character varying",255,"NO",NULL
+"public","census","oa_code","character varying",9,"NO",NULL
+"public","census","census_year","integer",NULL,"NO",NULL
+"public","census","pct_age_18_29","numeric",NULL,"NO",NULL
+"public","census","pct_age_30_65","numeric",NULL,"NO",NULL
+"public","census","pct_age_over_65","numeric",NULL,"NO",NULL
+"public","census","pct_male","numeric",NULL,"NO",NULL
+"public","census","pct_female","numeric",NULL,"NO",NULL
+"public","census","pct_student","numeric",NULL,"NO",NULL
+"public","census","pct_bch","numeric",NULL,"NO",NULL
+"public","census","pct_wk_class","numeric",NULL,"NO",NULL
+"public","census","pct_mid_class","numeric",NULL,"NO",NULL
+"public","census","pct_own_hme","numeric",NULL,"NO",NULL
+"public","census","pct_rent","numeric",NULL,"NO",NULL
+"public","census","pct_fb","numeric",NULL,"NO",NULL
+"public","census","pop_den","numeric",NULL,"YES",NULL
+"public","census","oa_pop","integer",NULL,"YES",NULL
+"public","census_demographics","oa_code","character varying",12,"NO",NULL
+"public","census_demographics","census_year","smallint",NULL,"NO",NULL
+"public","census_demographics","ward_pop","integer",NULL,"NO",NULL
+"public","census_demographics","pop_den","numeric",NULL,"NO","0.00"
+"public","census_demographics","vote_shr","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_age_18_29","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_age_30_65","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_age_over_65","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_male","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_female","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_student","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_bch","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_wk_class","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_mid_class","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_own_hme","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_rent","numeric",NULL,"NO","0.00"
+"public","census_demographics","pct_fb","numeric",NULL,"NO","0.00"
+"public","census_pop","oa_code","character varying",20,"NO",NULL
+"public","census_pop","census_year","integer",NULL,"NO",NULL
+"public","census_pop","total_population","integer",NULL,"NO",NULL
+"public","census_pop","area_sq_km","numeric",NULL,"NO",NULL
+"public","council_divisions","division_code","text",NULL,"NO",NULL
+"public","council_divisions","division_name","text",NULL,"NO",NULL
+"public","council_divisions","council_code","text",NULL,"YES",NULL
+"public","council_divisions","council_name","text",NULL,"YES",NULL
+"public","council_divisions","boundary_year","integer",NULL,"NO",NULL
+"public","council_divisions","geometry","USER-DEFINED",NULL,"NO",NULL
+"public","council_divisions","forecasted_winner","text",NULL,"YES",NULL
+"public","council_divisions","forecasted_share","numeric",NULL,"YES",NULL
+"public","council_divisions","current_winner","text",NULL,"YES",NULL
+"public","council_divisions","current_share","numeric",NULL,"YES",NULL
+"public","council_divisions","forecast_run_at","timestamp with time zone",NULL,"YES",NULL
+"public","county_codes","cc_code","character varying",9,"NO",NULL
+"public","county_codes","council_name","character varying",150,"NO",NULL
+"public","dc_candidates_by_elections_2026","person_id","bigint",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","person_name","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","election_id","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","ballot_paper_id","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","election_date","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","election_current","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","party_name","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","party_id","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","post_label","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","cancelled_poll","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","seats_contested","bigint",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","honorific_prefix","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","honorific_suffix","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","email","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","facebook_page_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","facebook_personal_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","homepage_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","blog_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","linkedin_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","party_ppc_page_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","twitter_username","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","mastodon_username","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","wikipedia_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","wikidata_id","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","youtube_profile","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","instagram_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","blue_sky_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","threads_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","tiktok_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","other_url","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","mnis_id","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","twfy_id","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","gender","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","birth_date","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","death_date","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","favourite_biscuit","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","statement_to_voters","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","statement_last_updated","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","person_last_updated","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","image","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","party_description_text","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","sopn_last_name","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","sopn_first_names","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","legacy_party_id","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","party_list_position","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","party_lists_in_use","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","previous_party_affiliations","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","votes_cast","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","elected","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","tied_vote_winner","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","rank","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","turnout_reported","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","spoilt_ballots","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","total_electorate","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","turnout_percentage","double precision",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","results_source","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","by_election","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","by_election_reason","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","gss","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","post_id","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","candidates_locked","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","nuts1","text",NULL,"YES",NULL
+"public","dc_candidates_by_elections_2026","organisation_name","text",NULL,"YES",NULL
+"public","election_results","wd_code","character varying",20,"NO",NULL
+"public","election_results","election_date","date",NULL,"NO",NULL
+"public","election_results","candidate_id","integer",NULL,"NO",NULL
+"public","election_results","seats_available","integer",NULL,"YES",NULL
+"public","election_results","is_uncontested","boolean",NULL,"YES",NULL
+"public","election_results","votes_received","integer",NULL,"YES",NULL
+"public","election_results","vote_share","numeric",NULL,"YES",NULL
+"public","election_results","election_year","integer",NULL,"YES",NULL
+"public","election_results","is_elected","boolean",NULL,"YES",NULL
+"public","election_results","is_incumbent_cllr","boolean",NULL,"YES",NULL
+"public","election_results","national_poll_party_share","numeric",NULL,"YES",NULL
+"public","election_results","prior_ward_closeness_margin","numeric",NULL,"YES",NULL
+"public","electoral_wards","wd_code","character varying",20,"NO",NULL
+"public","electoral_wards","ward_name","character varying",255,"NO",NULL
+"public","electoral_wards","cc_code","character varying",20,"YES",NULL
+"public","electoral_wards","lad_code","character varying",20,"YES",NULL
+"public","electoral_wards_history","wd_code","character varying",20,"NO",NULL
+"public","electoral_wards_history","election_year","integer",NULL,"NO",NULL
+"public","electoral_wards_history","ward_name","character varying",255,"NO",NULL
+"public","electoral_wards_history","cc_code","character varying",20,"NO",NULL
+"public","geographic_lookup","wd_code","character varying",9,"NO",NULL
+"public","geographic_lookup","oa_code","character varying",9,"NO",NULL
+"public","geographic_lookup","lookup_version_year","integer",NULL,"NO",NULL
+"public","geography_columns","f_table_catalog","name",NULL,"YES",NULL
+"public","geography_columns","f_table_schema","name",NULL,"YES",NULL
+"public","geography_columns","f_table_name","name",NULL,"YES",NULL
+"public","geography_columns","f_geography_column","name",NULL,"YES",NULL
+"public","geography_columns","coord_dimension","integer",NULL,"YES",NULL
+"public","geography_columns","srid","integer",NULL,"YES",NULL
+"public","geography_columns","type","text",NULL,"YES",NULL
+"public","geometry_columns","f_table_catalog","character varying",256,"YES",NULL
+"public","geometry_columns","f_table_schema","name",NULL,"YES",NULL
+"public","geometry_columns","f_table_name","name",NULL,"YES",NULL
+"public","geometry_columns","f_geometry_column","name",NULL,"YES",NULL
+"public","geometry_columns","coord_dimension","integer",NULL,"YES",NULL
+"public","geometry_columns","srid","integer",NULL,"YES",NULL
+"public","geometry_columns","type","character varying",30,"YES",NULL
+"public","spatial_ref_sys","srid","integer",NULL,"NO",NULL
+"public","spatial_ref_sys","auth_name","character varying",256,"YES",NULL
+"public","spatial_ref_sys","auth_srid","integer",NULL,"YES",NULL
+"public","spatial_ref_sys","srtext","character varying",2048,"YES",NULL
+"public","spatial_ref_sys","proj4text","character varying",2048,"YES",NULL

@@ -96,6 +96,14 @@ class PostgreSQLDatabase(iDatabaseInterface):
         with self.engine.begin() as connection:
             connection.execute(text(statement), parameters)
 
+def get_database(db_config=None) -> iDatabaseInterface:
+    """Returns the app's configured database backend. Defaults to PostgreSQL;
+    set DB_BACKEND=mysql to use MySQL instead."""
+    backend = os.getenv("DB_BACKEND", "postgres").strip().lower()
+    if backend == "mysql":
+        return MySQLDatabase(db_config)
+    return PostgreSQLDatabase(db_config)
+
 class CSVDataUploader(Data_Uploader_Interface):
     def __init__(self, data_source: str):
         self.data_source = data_source

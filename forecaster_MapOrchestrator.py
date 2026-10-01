@@ -163,10 +163,15 @@ class BaseMapOrchestrator:
 class CouncilMapOrchestrator(BaseMapOrchestrator):
     @staticmethod
     def _lookup_path() -> Path | None:
+        # Attempt to locate the lookup CSV file for council divisions
         root = Path(__file__).parent / "data"
         candidates = [
+            # get the county council lookup CSV file for England
             root / "csv" / "Ward_to_LAD_to_County_to_County_Electoral_Division_(May_2026)_Lookup_for_England.csv",
             root / "csv" / "Ward_to_LAD_to_County_to_County_Electoral_Division_(May_2025)_Lookup_for_England.csv",
+            # get the district council lookup CSV file for England
+            root / "csv" / "Ward_to_LAD_to_District_Council_(May_2026)_Lookup_for_England.csv",
+            root / "csv" / "Ward_to_LAD_to_District_Council_(May_2025)_Lookup_for_England.csv",
         ]
         return next((path for path in candidates if path.is_file()), None)
 

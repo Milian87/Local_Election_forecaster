@@ -15,7 +15,26 @@ import PySide6.QtWidgets as QtWidgets
 from forecaster_Controllers import DashboardController
 from forecaster_forecast_service import (Forecaster_1, Forecaster_2, Forecaster_3, Forecast_Repository, ForecastService)
 from forecaster_GUI import AnalysisScreen, DashboardScreen, DataScreen, ForecastScreen, MainWindow
+from forecaster_polling_finder import PollFetcher
 
+
+class PollRefreshWorker(QtCore.QObject):
+    completed = QtCore.Signal(int)
+    failed = QtCore.Signal(str)
+    finished = QtCore.Signal()
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            print("[POLLS] Refreshing national polls...", flush=True)
+            row_count = len(PollFetcher().run_pipeline())
+            self.completed.emit(row_count)
+        except Exception as error:
+            print(f"[POLLS] Refresh failed: {error}", flush=True)
+            traceback.print_exc()
+            self.failed.emit(str(error))
+        finally:
+            self.finished.emit()
 
 class ForecastWorker(QtCore.QObject):
     completed = QtCore.Signal(object)
@@ -23,10 +42,12 @@ class ForecastWorker(QtCore.QObject):
     finished = QtCore.Signal()
 
     @QtCore.Slot()
-    def __init__(self, compositional=False, target_date="2026-09-21", target_label="Tomorrow", user_polls=None, ignore_user_polls=True):
+    def __init__(self, compositional=False, target_date=None, target_label="Tomorrow", user_polls=None, ignore_user_polls=True):
         super().__init__()
         self.compositional = compositional
-        self.target_date = target_date
+        self.target_date = target_date or QtCore.QDate.currentDate().addDays(1).toString(
+            QtCore.Qt.DateFormat.ISODate
+        )
         self.target_label = target_label
         self.user_polls = user_polls or {}
         self.ignore_user_polls = ignore_user_polls
@@ -111,13 +132,47 @@ class ForecastApp:
       #  screen_widgets["Analysis"].set_forecast_loading(True)
         
         self.main_window.set_reforecast_enabled(False)
-        self._start_forecast_worker(
+        self._start_poll_refresh(
             screen_widgets["Dashboard"],
             screen_widgets["Forecast"],
-            screen_widgets["Analysis"], # Pass Analysis screen here
-            target_label="Tomorrow",
+            screen_widgets["Analysis"],
         )
         return self.app.exec()
+
+    def _start_poll_refresh(
+        self,
+        dashboard: DashboardScreen,
+        forecast: ForecastScreen,
+        analysis: AnalysisScreen,
+    ) -> None:
+        """Refreshes national polls on startup, then kicks off the first forecast run."""
+        self.poll_thread = QtCore.QThread()
+        self.poll_worker = PollRefreshWorker()
+        self.poll_worker.moveToThread(self.poll_thread)
+
+        self.poll_thread.started.connect(self.poll_worker.run)
+        self.poll_worker.completed.connect(
+            lambda count: print(f"[POLLS] Refreshed {count:,} poll records.", flush=True),
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
+        self.poll_worker.failed.connect(
+            lambda message: print(f"[POLLS] Continuing with existing poll data: {message}", flush=True),
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
+        self.poll_worker.finished.connect(self.poll_thread.quit)
+        self.poll_thread.finished.connect(self.poll_worker.deleteLater)
+        self.poll_thread.finished.connect(self.poll_thread.deleteLater)
+        self.poll_thread.finished.connect(
+            lambda: self._start_forecast_worker(
+                dashboard,
+                forecast,
+                analysis,
+                target_date=self.main_window.date_selector.currentData(), # type: ignore
+                target_label=self.main_window.date_selector.currentText(), # type: ignore
+            )
+        )
+
+        self.poll_thread.start()
 
     def _reforecast(self, model_name: str, target_date: str, target_label: str, user_polls: dict, ignore_user_polls: bool) -> None:
         dashboard = self.main_window.screens["Dashboard"] # type: ignore
@@ -130,7 +185,7 @@ class ForecastApp:
             dashboard,
             forecast,
             analysis,
-            compositional=model_name == "Softmax Model",
+            compositional=model_name, # type: ignore
             target_date=target_date,
             target_label=target_label,
             user_polls=user_polls,
@@ -143,7 +198,7 @@ class ForecastApp:
         forecast: ForecastScreen,
         analysis: AnalysisScreen,
         compositional=False,
-        target_date="2026-09-21",
+        target_date=None,
         target_label="Tomorrow",
         user_polls=None,
         ignore_user_polls=True,
