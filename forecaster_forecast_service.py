@@ -457,7 +457,7 @@ class Forecaster_1(iMachineLearningInterface):
         self.feature_engineer.engineer_features()
         self.df_raw = self.feature_engineer.df_raw
 
-    def _time_based_holdout_split(self, historical_data: pd.DataFrame, columns_to_drop: list[str], test_size: float = 0.5, random_state: int = 42):
+    def _time_based_holdout_split(self, historical_data: pd.DataFrame, columns_to_drop: list[str], test_size: float = 0.5, random_state: int = 42, target_column: str = 'diff_vote_share'):
         """Hold out the most recent election year instead of a random sample, so results from
         that year cannot leak into earlier training rows; the held-out year is then randomly
         split into validation/test since no further time ordering exists within it."""
@@ -466,7 +466,7 @@ class Forecaster_1(iMachineLearningInterface):
 
         if len(years) < 2:
             X = historical_data.drop(columns=feature_columns).astype(float)
-            y = historical_data['diff_vote_share']
+            y = historical_data[target_column]
             return train_test_split(X, y, test_size=0.2, random_state=random_state)
 
         most_recent_year = years[-1]
@@ -474,9 +474,9 @@ class Forecaster_1(iMachineLearningInterface):
         holdout_rows = historical_data[historical_data['election_year'] == most_recent_year]
 
         X_tr = train_rows.drop(columns=feature_columns).astype(float)
-        y_tr = train_rows['diff_vote_share']
+        y_tr = train_rows[target_column]
         X_holdout = holdout_rows.drop(columns=feature_columns).astype(float)
-        y_holdout = holdout_rows['diff_vote_share']
+        y_holdout = holdout_rows[target_column]
 
         X_val, X_te, y_val, y_te = train_test_split(X_holdout, y_holdout, test_size=test_size, random_state=random_state)
         X_tr = pd.concat([X_tr, X_val])
@@ -539,7 +539,7 @@ class Forecaster_1(iMachineLearningInterface):
 
         # 3. Comparative Logging Output
         print("\n====================================================")
-        print("HISTORICAL BACKTESTING PERFORMANCE COMPARISON")
+        print("DELTA MODEL - HISTORICAL BACKTESTING PERFORMANCE COMPARISON")
         print("====================================================")
         print("Linear Baseline (Linear Regression):")
         print(f"   - RMSE: {linear_rmse:.2f}%")
@@ -680,18 +680,45 @@ class Forecaster_2(iMachineLearningInterface, BaseEstimator, RegressorMixin):
         X_train = historical_data.drop(columns=columns_to_drop).astype(float)
         y_train = historical_data["party_vote_share"]
         self.X_train_features = X_train
+
+        # Split by election year (not randomly) so the most recent year cannot leak into training.
+        X_tr, X_te, y_tr, y_te = Forecaster_1._time_based_holdout_split(  # type: ignore
+            self, historical_data, columns_to_drop, target_column="party_vote_share"  # type: ignore
+        )
+
+        # 1. Train Linear Baseline (Control Group)
+        linear_model = LinearRegression()
+        linear_model.fit(X_tr, y_tr)
+        y_pred_linear = linear_model.predict(X_te)
+
+        linear_rmse = np.sqrt(mean_squared_error(y_te, y_pred_linear))
+        linear_r2 = r2_score(y_te, y_pred_linear)
+
+        # 2. Train Non-Linear Ensemble
+        self.model.fit(X_tr, y_tr)
+        y_pred_ensemble = self.model.predict(X_te)
+
+        ensemble_rmse = np.sqrt(mean_squared_error(y_te, y_pred_ensemble))
+        ensemble_r2 = r2_score(y_te, y_pred_ensemble)
+        self.last_rmse = float(ensemble_rmse)
+        self.last_r2 = float(ensemble_r2)
+
+        # 3. Comparative Logging Output
+        print("\n====================================================")
+        print("SOFTMAX MODEL - HISTORICAL BACKTESTING PERFORMANCE COMPARISON")
+        print("====================================================")
+        print("Linear Baseline (Linear Regression):")
+        print(f"   - RMSE: {linear_rmse:.2f}%")
+        print(f"   - R² Score: {linear_r2:.4f} ({linear_r2*100:.2f}% variance explained)")
+        print("-" * 52)
+        print(f"Non-Linear Ensemble ({self.model.__class__.__name__}):")
+        print(f"   - RMSE: {ensemble_rmse:.2f}%")
+        print(f"   - R² Score: {ensemble_r2:.4f} ({ensemble_r2*100:.2f}% variance explained)")
+        print("====================================================\n")
+
+        # Train model on full historical context to forecast the target year
         self.model.fit(X_train, y_train)
         self.explainer = shap.TreeExplainer(self.model)
-
-        predictions = self.model.predict(X_train)
-        residuals = y_train - predictions
-        self.last_rmse = float(np.sqrt(np.mean(residuals ** 2)))
-        total_variance = np.sum((y_train - y_train.mean()) ** 2)
-        self.last_r2 = float(
-            1.0 - (np.sum(residuals ** 2) / total_variance)
-            if total_variance
-            else 0.0
-        )
 
     def train_and_evaluate(self) -> None:
         self.train_model()
@@ -871,18 +898,43 @@ class Forecaster_3(iMachineLearningInterface, BaseEstimator, RegressorMixin):
         X_train = historical_data.drop(columns=columns_to_drop).astype(float)
         y_train = historical_data["diff_vote_share"]
         self.X_train_features = X_train
+
+        # Split by election year (not randomly) so the most recent year cannot leak into training.
+        X_tr, X_te, y_tr, y_te = Forecaster_1._time_based_holdout_split(self, historical_data, columns_to_drop)  # type: ignore
+
+        # 1. Train Linear Baseline (Control Group)
+        linear_model = LinearRegression()
+        linear_model.fit(X_tr, y_tr)
+        y_pred_linear = linear_model.predict(X_te)
+
+        linear_rmse = np.sqrt(mean_squared_error(y_te, y_pred_linear))
+        linear_r2 = r2_score(y_te, y_pred_linear)
+
+        # 2. Train Non-Linear Ensemble
+        self.model.fit(X_tr, y_tr)
+        y_pred_ensemble = self.model.predict(X_te)
+
+        ensemble_rmse = np.sqrt(mean_squared_error(y_te, y_pred_ensemble))
+        ensemble_r2 = r2_score(y_te, y_pred_ensemble)
+        self.last_rmse = float(ensemble_rmse)
+        self.last_r2 = float(ensemble_r2)
+
+        # 3. Comparative Logging Output
+        print("\n====================================================")
+        print("HYBRID MODEL - HISTORICAL BACKTESTING PERFORMANCE COMPARISON")
+        print("====================================================")
+        print("Linear Baseline (Linear Regression):")
+        print(f"   - RMSE: {linear_rmse:.2f}%")
+        print(f"   - R² Score: {linear_r2:.4f} ({linear_r2*100:.2f}% variance explained)")
+        print("-" * 52)
+        print(f"Non-Linear Ensemble ({self.model.__class__.__name__}):")
+        print(f"   - RMSE: {ensemble_rmse:.2f}%")
+        print(f"   - R² Score: {ensemble_r2:.4f} ({ensemble_r2*100:.2f}% variance explained)")
+        print("====================================================\n")
+
+        # Train model on full historical context to forecast the target year
         self.model.fit(X_train, y_train)
         self.explainer = shap.TreeExplainer(self.model)
-
-        predictions = self.model.predict(X_train)
-        residuals = y_train - predictions
-        self.last_rmse = float(np.sqrt(np.mean(residuals ** 2)))
-        total_variance = np.sum((y_train - y_train.mean()) ** 2)
-        self.last_r2 = float(
-            1.0 - (np.sum(residuals ** 2) / total_variance)
-            if total_variance
-            else 0.0
-        )
 
     def train_and_evaluate(self) -> None:
         self.train_model()
