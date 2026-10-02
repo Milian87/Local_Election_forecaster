@@ -1,0 +1,169 @@
+diff --git a/forecaster_forecast_service.py b/forecaster_forecast_service.py
+index febae368..0cd3ca5b 100644
+--- a/forecaster_forecast_service.py
++++ b/forecaster_forecast_service.py
+@@ -1432,6 +1432,74 @@ class Forecast_Repository:
+         """Starts an interactive CLI loop for ward code or name lookup."""
+         interactive_forecast_lookup(forecaster)
+ 
++    def get_ward_polling_timeseries(self, forecaster, national_polls_df, target_wd_code, target_party="Labour"):
++        """
++        Generates a time-series of predicted vote shares for a specific ward and party 
++        across the available dates in the national polls dataset.
++        """
++        # 1. Isolate historical base data for the target ward (exclude the target-year
++        # placeholder rows, which carry no real party_vote_share baseline yet).
++        ward_base = forecaster.df_raw[
++            (forecaster.df_raw['wd_code'] == target_wd_code)
++            & (forecaster.df_raw['election_year'] < forecaster.target_year)
++        ].copy()
++        if ward_base.empty:
++            return pd.DataFrame()
++
++        # 2. Filter for the specific party and use its most recent real result as the baseline
++        ward_party_base = ward_base[ward_base['party_name'].str.casefold() == target_party.casefold()].copy()
++        if ward_party_base.empty:
++            # If no direct historical row, create a generic template row for the ward/party
++            ward_party_base = ward_base.sort_values('election_year').iloc[:1].copy()
++            ward_party_base['party_name'] = target_party
++            ward_party_base['party_vote_share'] = 15.0  # default baseline
++        else:
++            ward_party_base = ward_party_base.sort_values('election_year').tail(1)
++
++        # 3. Expand across all available dates in national_polls to build a timeline.
++        # The ward/party's historical features (rank, prior share, demographics, etc.)
++        # are held fixed at their real trained values; only the date and national poll
++        # trend features vary, since that's what this projection is meant to isolate.
++        timeline_rows = []
++        unique_dates = pd.to_datetime(national_polls_df['poll_date']).dropna().unique()
++        epoch = pd.Timestamp("2016-01-01")
++
++        for poll_date in sorted(unique_dates):
++            row = ward_party_base.iloc[0].copy()
++            row['election_date'] = poll_date
++            row['election_year'] = pd.Timestamp(poll_date).year
++            row['election_date_ordinal'] = float((pd.Timestamp(poll_date) - epoch).days)
++            timeline_rows.append(row)
++            
++        timeline_df = pd.DataFrame(timeline_rows)
++        
++        # 4. Attach polling features using your leakage-safe function
++        processed_timeline = _attach_polling_features(timeline_df, national_polls_df)
++
++        # Training one-hot-encodes party_name into party_name_<Party> dummy columns and
++        # drops the raw string column; reproduce that here so the model sees the right party.
++        party_dummy_column = f"party_name_{target_party}"
++        processed_timeline[party_dummy_column] = 1.0
++
++        # Align to the exact columns/order the model was trained on, rather than a
++        # hand-maintained drop list that can silently drift out of sync with training.
++        train_columns = getattr(forecaster, "X_train_features", None)
++        if train_columns is None or train_columns.empty:
++            return pd.DataFrame()
++        X_timeline = processed_timeline.reindex(columns=train_columns.columns, fill_value=0.0).astype(float)
++        
++        # Predict delta or share depending on model type, then calculate final timeline share
++        predicted_deltas = forecaster.model.predict(X_timeline)
++        processed_timeline['projected_ward_share'] = processed_timeline['party_vote_share'] + (predicted_deltas * forecaster.delta_shrink_factor)
++        
++        # Return date and the downscaled ward polling projection
++        result_df = pd.DataFrame({
++            'poll_date': processed_timeline['election_date'],
++            'projected_share': processed_timeline['projected_ward_share'].clip(0.0, 100.0)
++        }).sort_values('poll_date')
++        
++        return result_df
++
+ class ForecastService:
+     """Coordinator: pulls data from the repository and drives the forecaster's ML lifecycle."""
+     def __init__(self, forecaster: iMachineLearningInterface, repository: Forecast_Repository):
+@@ -1453,51 +1521,48 @@ class ForecastService:
+             raise ValueError("No dated election results are available for forecasting.")
+ 
+         latest_date = available_dates[-1]
+-        target_rows = raw_data[raw_data["election_date"] == selected_date].copy()
+-        if not target_rows.empty:
+-            training_rows = raw_data[raw_data["election_date"] < selected_date].copy()
+-            if target_rows.empty:
+-                raise ValueError(f"No election results are available for target date {target_date}.")
+-            previous = (
+-                training_rows.sort_values("election_date")
+-                .drop_duplicates(["wd_code", "party_name"], keep="last")
+-                [["wd_code", "party_name", "party_vote_share"]]
+-                .rename(columns={"party_vote_share": "baseline_vote_share"})
+-            )
+-            target_rows = target_rows.drop(columns=["party_vote_share"]).merge(
+-                previous, on=["wd_code", "party_name"], how="left"
+-            )
+-            target_rows["party_vote_share"] = target_rows["baseline_vote_share"].fillna(0.0)
+-            target_rows = target_rows.drop(columns=["baseline_vote_share"])
+-            target_rows["election_year"] = selected_date.year
+-            return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
+-
+-        training_rows = raw_data.copy()
+-        if selected_date <= latest_date:
+-            raise ValueError(f"No election results are available for target date {target_date}.")
++        target_year = selected_date.year if selected_date > latest_date else selected_date.year
++
++        # Define your 6 main parties to ensure universal representation per ward
++        main_parties = [
++            "Conservative",
++            "Labour",
++            "Liberal Democrats",
++            "Green Party",
++            "Reform UK",
++            "Restore Britain"  # Adjust if your 6th main party is different (e.g., UKIP or Independent)
++        ]
+ 
+-        current_rows = training_rows
++        # Get unique wards and their static geographic/census attributes from the latest data
++        latest_data = raw_data[raw_data["election_date"] == latest_date].copy()
+         if ward_name_map is not None:
+-            current_codes = set(ward_name_map)
+-            current_rows = current_rows[
+-                current_rows["wd_code"].astype(str).isin(current_codes)
+-            ]
+-        if current_rows.empty:
+-            raise ValueError(
+-                "No election results match the current electoral divisions for forecasting."
+-            )
++            latest_data = latest_data[latest_data["wd_code"].astype(str).isin(set(ward_name_map))]
+ 
+-        target_rows = (
+-            current_rows.sort_values(
+-                ["election_date", "election_year", "candidate_id"]
+-            )
+-            .drop_duplicates(["wd_code", "party_name"], keep="last")
+-            .copy()
+-        )
+-        target_rows["election_date"] = selected_date
+-        target_rows["election_year"] = latest_date.year + 1
+-        return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
++        ward_template_rows = []
++        for wd_code, group in latest_data.groupby("wd_code"):
++            base_row = group.iloc[0].copy()
++            existing_parties = set(group["party_name"].astype(str).str.strip())
++            
++            for party in main_parties:
++                if party in existing_parties:
++                    party_row = group[group["party_name"].astype(str).str.strip() == party].iloc[0].copy()
++                else:
++                    # Create a synthetic template row for parties that didn't stand last time
++                    party_row = base_row.copy()
++                    party_row["party_name"] = party
++                    party_row["party_vote_share"] = 0.0  # Zero or baseline start share
++                    party_row["has_incumbent_boost"] = 0
++                    party_row["candidate_name"] = f"{party} Candidate"
++                
++                party_row["election_date"] = selected_date
++                party_row["election_year"] = target_year
++                ward_template_rows.append(party_row)
+ 
++        target_rows = pd.DataFrame(ward_template_rows)
++        
++        # Combine historical training rows with the fully expanded 6-party target dataset
++        training_rows = raw_data[raw_data["election_date"] < selected_date].copy()
++        return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
+     @staticmethod
+     def _apply_user_polls(
+         dataframe: pd.DataFrame,

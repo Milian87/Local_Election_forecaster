@@ -40,6 +40,7 @@ def _query_election_data(engine, db_config) -> tuple[pd.DataFrame, dict[str, str
             er.wd_code, ew.cc_code AS cc_code, cc.council_name, cand.registered_party AS party_name, cand.candidate_name,
             er.election_date, er.election_year, er.candidate_id, AVG(er.vote_share) AS party_vote_share, 
             MAX(CASE WHEN er.is_incumbent_cllr THEN 1 ELSE 0 END) AS has_incumbent_boost,
+            MAX(er.seats_available) AS seats_available,
             AVG(er.national_poll_party_share) AS national_poll_share,
             (SUM(c.oa_pop) / SUM(c.oa_pop / NULLIF(c.pop_den, 0))) AS ward_population_density,
             AVG(c.pct_student) AS pct_student, AVG(c.pct_own_hme) AS pct_own_hme, AVG(c.pct_rent) AS pct_rent, 
@@ -188,6 +189,35 @@ def _attach_polling_features(
     for feature in ["national_poll_share", *POLLING_FEATURES]:
         result[feature] = pd.to_numeric(result[feature], errors="coerce").fillna(0.0)
     return result
+
+
+def _allocate_ward_seats(
+    data: pd.DataFrame,
+    share_column: str,
+    seats_column: str = "seats_available",
+) -> pd.DataFrame:
+    """Select the top-N rows per ward (wd_code), ranked by `share_column`.
+
+    N is the ward's number of seats (`seats_column`), so single-member wards
+    (and County/Unitary divisions) behave exactly as before - one winner per
+    ward - while multi-member District Council wards correctly award a seat
+    each to the top-N parties by vote share, reflecting that voters there get
+    one vote per available seat rather than a single FPTP choice.
+    """
+    if data.empty:
+        return data.iloc[0:0]
+
+    if seats_column in data.columns:
+        seats_resolved = pd.to_numeric(data[seats_column], errors="coerce")
+    else:
+        seats_resolved = pd.Series(np.nan, index=data.index)
+    seats_resolved = seats_resolved.fillna(1).clip(lower=1).astype(int)
+
+    # method="first" mirrors idxmax()'s tie-break (first occurrence wins) so
+    # single-seat wards keep exactly the same winner as before.
+    seat_rank = data.groupby("wd_code")[share_column].rank(ascending=False, method="first")
+
+    return data[seat_rank <= seats_resolved]
 #==================================================================================
 # Model 1: May - August 2026 Local Election Forecast dissertation (The Delta Model)
 #==================================================================================
@@ -287,7 +317,7 @@ class Forecaster_1(iMachineLearningInterface):
         candidate_drops = [
             'party_vote_share', 'prior_vote_share', 'current_ward_rank', 'prior_ward_rank',
             'diff_vote_share', 'election_year', 'wd_code', 'cc_code', 'party_label', 
-            'candidate_id', 'candidate_name', 'council_name', 'election_date'
+            'candidate_id', 'candidate_name', 'council_name', 'election_date', 'seats_available'
         ]
         columns_to_drop = [col for col in candidate_drops if col in historical_data.columns]
         
@@ -349,13 +379,12 @@ class Forecaster_1(iMachineLearningInterface):
         if target_future.empty:
             return pd.DataFrame(columns=["party", "seats_forecast", "seats_current", "seat_difference"])
         
-        # Extract live predicted winners per division boundary
-        idx_pred_winners = target_future.groupby('wd_code')['final_forecast_share'].idxmax()
-        pred_winners = target_future.loc[idx_pred_winners, 'party_label'].value_counts()
+        # Extract live predicted winners per division boundary (one seat per party
+        # per ward, or top-N parties for multi-member District Council wards)
+        pred_winners = _allocate_ward_seats(target_future, 'final_forecast_share')['party_label'].value_counts()
         
         # Extract baseline current winners using maximum starting party vote shares
-        idx_curr_winners = target_future.groupby('wd_code')['party_vote_share'].idxmax()
-        curr_winners = target_future.loc[idx_curr_winners, 'party_label'].value_counts()
+        curr_winners = _allocate_ward_seats(target_future, 'party_vote_share')['party_label'].value_counts()
         
         # Merge data metrics into a structured summary table matching the GUI schema
         all_parties = sorted(list(set(pred_winners.index) | set(curr_winners.index)))
@@ -385,13 +414,8 @@ class Forecaster_1(iMachineLearningInterface):
         if authority_data.empty:
             return pd.DataFrame(columns=["council", "current_party", "forecasted_winner", "seats_gained"])
 
-        grouping_columns = ["cc_code", "wd_code"]
-        forecast_winners = authority_data.loc[
-            authority_data.groupby(grouping_columns)["final_forecast_share"].idxmax()
-        ]
-        current_winners = authority_data.loc[
-            authority_data.groupby(grouping_columns)["party_vote_share"].idxmax()
-        ]
+        forecast_winners = _allocate_ward_seats(authority_data, "final_forecast_share")
+        current_winners = _allocate_ward_seats(authority_data, "party_vote_share")
 
         forecast_seats = forecast_winners.groupby(["cc_code", "party_label"]).size().rename("seats_forecast")
         current_seats = current_winners.groupby(["cc_code", "party_label"]).size().rename("seats_current")
@@ -464,21 +488,28 @@ class Forecaster_1(iMachineLearningInterface):
             return pd.DataFrame(columns=columns)
 
         data = self.future_data.copy()
-        current_indexes = data.groupby("wd_code")["party_vote_share"].idxmax()
-        forecast_indexes = data.groupby("wd_code")["final_forecast_share"].idxmax()
-        current = data.loc[
-            current_indexes,
-            ["wd_code", "candidate_name", "party_label"],
+
+        # Rank each ward's current and forecast winners so multi-member wards
+        # (seats_available > 1) produce one row per won seat instead of one
+        # overall winner, pairing seat #1 with seat #1, seat #2 with seat #2, etc.
+        current_seats = _allocate_ward_seats(data, "party_vote_share").copy()
+        current_seats["seat_rank"] = current_seats.groupby("wd_code")["party_vote_share"].rank(
+            ascending=False, method="first"
+        )
+        forecast_seats = _allocate_ward_seats(data, "final_forecast_share").copy()
+        forecast_seats["seat_rank"] = forecast_seats.groupby("wd_code")["final_forecast_share"].rank(
+            ascending=False, method="first"
+        )
+
+        current = current_seats[
+            ["wd_code", "seat_rank", "candidate_name", "party_label"]
         ].rename(
             columns={
                 "candidate_name": "current_councillor",
                 "party_label": "incumbent_party",
             }
         )
-        forecast = data.loc[
-            forecast_indexes,
-            ["wd_code", "party_label"],
-        ].rename(
+        forecast = forecast_seats[["wd_code", "seat_rank", "party_label"]].rename(
             columns={
                 "party_label": "forecasted_party",
             }
@@ -486,14 +517,18 @@ class Forecaster_1(iMachineLearningInterface):
         divisions = data[["wd_code", "council_name"]].drop_duplicates("wd_code")
         divisions["division"] = divisions["wd_code"].map(self.ward_name_map)
         result = (
-            divisions.merge(current, on="wd_code", how="left")
-            .merge(forecast, on="wd_code", how="left")
+            current.merge(forecast, on=["wd_code", "seat_rank"], how="outer")
+            .merge(divisions, on="wd_code", how="left")
             .rename(columns={"council_name": "council"})
         )
         result["council"] = result["council"].fillna(result["wd_code"])
         result["division"] = result["division"].fillna(result["wd_code"])
         result["division_code"] = result["wd_code"]
-        return result[columns].sort_values(["council", "division"]).reset_index(drop=True)
+        return (
+            result.sort_values(["council", "division", "seat_rank"])
+            [columns]
+            .reset_index(drop=True)
+        )
 
     def get_council_results(self, council_name: str) -> pd.DataFrame:
         """Return current and forecast seat totals by party for one council."""
@@ -508,13 +543,11 @@ class Forecaster_1(iMachineLearningInterface):
         if data.empty:
             return pd.DataFrame(columns=columns)
 
-        current_winners = data.loc[
-            data.groupby("wd_code")["party_vote_share"].idxmax(),
-            "party_label",
+        current_winners = _allocate_ward_seats(data, "party_vote_share")[
+            "party_label"
         ].value_counts().rename("current_seats")
-        forecast_winners = data.loc[
-            data.groupby("wd_code")["final_forecast_share"].idxmax(),
-            "party_label",
+        forecast_winners = _allocate_ward_seats(data, "final_forecast_share")[
+            "party_label"
         ].value_counts().rename("forecast_seats")
         result = pd.concat([current_winners, forecast_winners], axis=1).fillna(0)
         result["current_seats"] = result["current_seats"].astype(int)
@@ -598,7 +631,7 @@ class Forecaster_1(iMachineLearningInterface):
         columns_to_drop = [
             'party_vote_share', 'prior_vote_share', 'current_ward_rank', 'prior_ward_rank',
             'diff_vote_share', 'election_year', 'wd_code', 'cc_code', 'party_label', 
-            'candidate_id', 'candidate_name', 'council_name', 'election_date'
+            'candidate_id', 'candidate_name', 'council_name', 'election_date', 'seats_available'
         ]
         
         X_train = historical_data.drop(columns=[col for col in columns_to_drop if col in historical_data.columns]).astype(float)
@@ -769,6 +802,7 @@ class Forecaster_2(iMachineLearningInterface, BaseEstimator, RegressorMixin):
             "party_name",
             "council_name",
             "party_label",
+            "seats_available",
         ]
         columns_to_drop = [
             column for column in candidate_drops if column in historical_data.columns
@@ -838,6 +872,7 @@ class Forecaster_2(iMachineLearningInterface, BaseEstimator, RegressorMixin):
             "party_name",
             "council_name",
             "party_label",
+            "seats_available",
         ]
         columns_to_drop = [
             column for column in candidate_drops if column in self.future_data.columns
@@ -992,6 +1027,7 @@ class Forecaster_3(iMachineLearningInterface, BaseEstimator, RegressorMixin):
             "party_name",
             "council_name",
             "party_label",
+            "seats_available",
         ]
         columns_to_drop = [
             column for column in candidate_drops if column in historical_data.columns
@@ -1059,6 +1095,7 @@ class Forecaster_3(iMachineLearningInterface, BaseEstimator, RegressorMixin):
             "party_name",
             "council_name",
             "party_label",
+            "seats_available",
         ]
         columns_to_drop = [
             column for column in candidate_drops if column in self.future_data.columns
@@ -1240,11 +1277,7 @@ class ModelEvaluator:
             if not filtered_data.empty:
                 evaluated_data = filtered_data
 
-        winner_indexes = evaluated_data.groupby("wd_code")[
-            "final_forecast_share"
-        ].idxmax()
-
-        winners = evaluated_data.loc[winner_indexes]
+        winners = _allocate_ward_seats(evaluated_data, "final_forecast_share")
         seat_counts = (
             winners["party_label"]
             .value_counts()
@@ -1432,6 +1465,74 @@ class Forecast_Repository:
         """Starts an interactive CLI loop for ward code or name lookup."""
         interactive_forecast_lookup(forecaster)
 
+    def get_ward_polling_timeseries(self, forecaster, national_polls_df, target_wd_code, target_party="Labour"):
+        """
+        Generates a time-series of predicted vote shares for a specific ward and party 
+        across the available dates in the national polls dataset.
+        """
+        # 1. Isolate historical base data for the target ward (exclude the target-year
+        # placeholder rows, which carry no real party_vote_share baseline yet).
+        ward_base = forecaster.df_raw[
+            (forecaster.df_raw['wd_code'] == target_wd_code)
+            & (forecaster.df_raw['election_year'] < forecaster.target_year)
+        ].copy()
+        if ward_base.empty:
+            return pd.DataFrame()
+
+        # 2. Filter for the specific party and use its most recent real result as the baseline
+        ward_party_base = ward_base[ward_base['party_name'].str.casefold() == target_party.casefold()].copy()
+        if ward_party_base.empty:
+            # If no direct historical row, create a generic template row for the ward/party
+            ward_party_base = ward_base.sort_values('election_year').iloc[:1].copy()
+            ward_party_base['party_name'] = target_party
+            ward_party_base['party_vote_share'] = 15.0  # default baseline
+        else:
+            ward_party_base = ward_party_base.sort_values('election_year').tail(1)
+
+        # 3. Expand across all available dates in national_polls to build a timeline.
+        # The ward/party's historical features (rank, prior share, demographics, etc.)
+        # are held fixed at their real trained values; only the date and national poll
+        # trend features vary, since that's what this projection is meant to isolate.
+        timeline_rows = []
+        unique_dates = pd.to_datetime(national_polls_df['poll_date']).dropna().unique()
+        epoch = pd.Timestamp("2016-01-01")
+
+        for poll_date in sorted(unique_dates):
+            row = ward_party_base.iloc[0].copy()
+            row['election_date'] = poll_date
+            row['election_year'] = pd.Timestamp(poll_date).year
+            row['election_date_ordinal'] = float((pd.Timestamp(poll_date) - epoch).days)
+            timeline_rows.append(row)
+            
+        timeline_df = pd.DataFrame(timeline_rows)
+        
+        # 4. Attach polling features using your leakage-safe function
+        processed_timeline = _attach_polling_features(timeline_df, national_polls_df)
+
+        # Training one-hot-encodes party_name into party_name_<Party> dummy columns and
+        # drops the raw string column; reproduce that here so the model sees the right party.
+        party_dummy_column = f"party_name_{target_party}"
+        processed_timeline[party_dummy_column] = 1.0
+
+        # Align to the exact columns/order the model was trained on, rather than a
+        # hand-maintained drop list that can silently drift out of sync with training.
+        train_columns = getattr(forecaster, "X_train_features", None)
+        if train_columns is None or train_columns.empty:
+            return pd.DataFrame()
+        X_timeline = processed_timeline.reindex(columns=train_columns.columns, fill_value=0.0).astype(float)
+        
+        # Predict delta or share depending on model type, then calculate final timeline share
+        predicted_deltas = forecaster.model.predict(X_timeline)
+        processed_timeline['projected_ward_share'] = processed_timeline['party_vote_share'] + (predicted_deltas * forecaster.delta_shrink_factor)
+        
+        # Return date and the downscaled ward polling projection
+        result_df = pd.DataFrame({
+            'poll_date': processed_timeline['election_date'],
+            'projected_share': processed_timeline['projected_ward_share'].clip(0.0, 100.0)
+        }).sort_values('poll_date')
+        
+        return result_df
+
 class ForecastService:
     """Coordinator: pulls data from the repository and drives the forecaster's ML lifecycle."""
     def __init__(self, forecaster: iMachineLearningInterface, repository: Forecast_Repository):
@@ -1453,51 +1554,48 @@ class ForecastService:
             raise ValueError("No dated election results are available for forecasting.")
 
         latest_date = available_dates[-1]
-        target_rows = raw_data[raw_data["election_date"] == selected_date].copy()
-        if not target_rows.empty:
-            training_rows = raw_data[raw_data["election_date"] < selected_date].copy()
-            if target_rows.empty:
-                raise ValueError(f"No election results are available for target date {target_date}.")
-            previous = (
-                training_rows.sort_values("election_date")
-                .drop_duplicates(["wd_code", "party_name"], keep="last")
-                [["wd_code", "party_name", "party_vote_share"]]
-                .rename(columns={"party_vote_share": "baseline_vote_share"})
-            )
-            target_rows = target_rows.drop(columns=["party_vote_share"]).merge(
-                previous, on=["wd_code", "party_name"], how="left"
-            )
-            target_rows["party_vote_share"] = target_rows["baseline_vote_share"].fillna(0.0)
-            target_rows = target_rows.drop(columns=["baseline_vote_share"])
-            target_rows["election_year"] = selected_date.year
-            return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
+        target_year = selected_date.year if selected_date > latest_date else selected_date.year
 
-        training_rows = raw_data.copy()
-        if selected_date <= latest_date:
-            raise ValueError(f"No election results are available for target date {target_date}.")
+        # Define your 6 main parties to ensure universal representation per ward
+        main_parties = [
+            "Conservative",
+            "Labour",
+            "Liberal Democrats",
+            "Green Party",
+            "Reform UK",
+            "Restore Britain"  # Adjust if your 6th main party is different (e.g., UKIP or Independent)
+        ]
 
-        current_rows = training_rows
+        # Get unique wards and their static geographic/census attributes from the latest data
+        latest_data = raw_data[raw_data["election_date"] == latest_date].copy()
         if ward_name_map is not None:
-            current_codes = set(ward_name_map)
-            current_rows = current_rows[
-                current_rows["wd_code"].astype(str).isin(current_codes)
-            ]
-        if current_rows.empty:
-            raise ValueError(
-                "No election results match the current electoral divisions for forecasting."
-            )
+            latest_data = latest_data[latest_data["wd_code"].astype(str).isin(set(ward_name_map))]
 
-        target_rows = (
-            current_rows.sort_values(
-                ["election_date", "election_year", "candidate_id"]
-            )
-            .drop_duplicates(["wd_code", "party_name"], keep="last")
-            .copy()
-        )
-        target_rows["election_date"] = selected_date
-        target_rows["election_year"] = latest_date.year + 1
+        ward_template_rows = []
+        for wd_code, group in latest_data.groupby("wd_code"):
+            base_row = group.iloc[0].copy()
+            existing_parties = set(group["party_name"].astype(str).str.strip())
+            
+            for party in main_parties:
+                if party in existing_parties:
+                    party_row = group[group["party_name"].astype(str).str.strip() == party].iloc[0].copy()
+                else:
+                    # Create a synthetic template row for parties that didn't stand last time
+                    party_row = base_row.copy()
+                    party_row["party_name"] = party
+                    party_row["party_vote_share"] = 0.0  # Zero or baseline start share
+                    party_row["has_incumbent_boost"] = 0
+                    party_row["candidate_name"] = f"{party} Candidate"
+                
+                party_row["election_date"] = selected_date
+                party_row["election_year"] = target_year
+                ward_template_rows.append(party_row)
+
+        target_rows = pd.DataFrame(ward_template_rows)
+        
+        # Combine historical training rows with the fully expanded 6-party target dataset
+        training_rows = raw_data[raw_data["election_date"] < selected_date].copy()
         return pd.concat([training_rows, target_rows], ignore_index=True, sort=False)
-
     @staticmethod
     def _apply_user_polls(
         dataframe: pd.DataFrame,

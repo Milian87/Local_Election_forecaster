@@ -26,6 +26,7 @@ from widgets import TransparentTableWidget
 import forecaster_MapOrchestrator as map_orchestrator
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 import matplotlib.pyplot as plt
+from forecaster_forecast_service import Forecast_Repository
 
 # ==========================================
 # GLOBAL UI THEME CONFIGURATION
@@ -875,7 +876,7 @@ class GeminiSummaryWorker(QtCore.QObject):
                 f"For the ward '{self.ward_name}', these factors had the largest effect on the predicted vote share:\n"
                 f"{feature_lines}\n\n"
                 "In 3-4 short sentences, give a plain-English, top-level summary of what is driving this ward's "
-                "forecast. Avoid jargon like 'SHAP' or 'feature'; speak in terms of the real-world factors listed."
+                "forecast, and how it could be used in a campaign. Avoid jargon like 'SHAP' or 'feature'; speak in terms of the real-world factors listed."
             )
 
             client = genai.Client(api_key=api_key)
@@ -990,10 +991,14 @@ class AnalysisScreen(BaseScreen):
         bottom_left_container.setStyleSheet(GLOBAL_CONTAINER_STYLE)
         self.bottom_left_layout = QtWidgets.QVBoxLayout(bottom_left_container)
         
-        polls_placeholder = QtWidgets.QLabel("National & Ward Polling Trend Graph (Bottom-Left)")
-        polls_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.bottom_left_layout.addWidget(polls_placeholder)
+        self.polls_canvas_container = QtWidgets.QWidget()
+        self.polls_chart_layout = QtWidgets.QVBoxLayout(self.polls_canvas_container)
+        self.bottom_left_layout.addWidget(self.polls_canvas_container)
         main_layout.addWidget(bottom_left_container, 1, 0)
+
+        self._repository = None
+        self._national_polls_df = None
+        self.show_default_polls_chart()
         
         # ==========================================
         # QUADRANT 4: BOTTOM-RIGHT (SHAP Explainability Chart)
@@ -1045,6 +1050,128 @@ class AnalysisScreen(BaseScreen):
         self.btn_select_view.clicked.connect(lambda: self.switch_view(0))
         self.btn_results_view.clicked.connect(lambda: self.switch_view(1))
         self.ward_table.cellClicked.connect(self.on_ward_row_clicked)
+
+
+
+    PARTY_COLORS = {
+        "Reform UK": "#00c3d9",
+        "Liberal Democrats": "#FDBB30",
+        "Green Party": "#00a85a",
+        "Conservative": "#0087dc",
+        "Labour": "#d50000",
+        "Independent": "#F598E5",
+        "Great Yarmouth First": "#000080",
+        "Restore Britain": "#000080",
+        "Default": "#bdbdbd",
+    }
+
+    def show_default_polls_chart(self):
+        fig, ax = plt.subplots(figsize=(5, 3))
+        ax.set_facecolor("none")
+        fig.patch.set_facecolor("none")
+        ax.text(0.5, 0.5, "Select a ward to view its polling trend",
+                horizontalalignment='center', verticalalignment='center',
+                transform=ax.transAxes, color='white', fontweight='bold')
+        ax.axis('off')
+        self.set_polls_figure(fig)
+
+    def set_polls_figure(self, fig):
+        while self.polls_chart_layout.count():
+            child = self.polls_chart_layout.takeAt(0)
+            if child is not None:
+                widget = child.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+        canvas = FigureCanvasQTAgg(fig)
+        canvas.setStyleSheet("background-color: transparent;")
+        self.polls_chart_layout.addWidget(canvas)
+        canvas.draw()
+
+    def display_ward_polls(self, forecaster, ward_name, wd_code=None, party_count=3):
+        """Renders a ward-level polling projection trend chart for the top parties in that ward."""
+        try:
+            if not hasattr(forecaster, "delta_shrink_factor") or getattr(forecaster, "model", None) is None:
+                # Compositional/softmax models don't expose the delta-based projection path
+                return
+            df_raw = getattr(forecaster, "df_raw", None)
+            if df_raw is None or df_raw.empty:
+                return
+
+            matched_code = str(wd_code) if wd_code else None
+            if not matched_code:
+                ward_name_map = getattr(forecaster, "ward_name_map", {}) or {}
+                target = str(ward_name).strip().casefold()
+                matched_code = next(
+                    (code for code, name in ward_name_map.items() if str(name).strip().casefold() == target),
+                    None,
+                )
+            if not matched_code:
+                return
+
+            ward_rows = df_raw[df_raw["wd_code"].astype(str) == matched_code]
+            if ward_rows.empty:
+                return
+
+            # Use the most recent REAL result (exclude the target-year placeholder rows)
+            # to pick which parties are actually contesting/relevant in this ward.
+            target_year = getattr(forecaster, "target_year", None)
+            historical_rows = ward_rows[ward_rows["election_year"] < target_year] if target_year else ward_rows
+            if historical_rows.empty:
+                return
+            latest_year = historical_rows["election_year"].max()
+            top_parties = (
+                historical_rows[historical_rows["election_year"] == latest_year]
+                .sort_values("party_vote_share", ascending=False)["party_name"]
+                .drop_duplicates()
+                .head(party_count)
+                .tolist()
+            )
+            if not top_parties:
+                return
+
+            if self._repository is None:
+                self._repository = Forecast_Repository(load_map=False)
+            if self._national_polls_df is None:
+                self._national_polls_df = self._repository.load_national_polls()
+            if self._national_polls_df.empty:
+                return
+
+            fig, ax = plt.subplots(figsize=(6, 3.5))
+            fig.patch.set_facecolor("none")
+            ax.set_facecolor("none")
+
+            plotted_any = False
+            for party in top_parties:
+                series = self._repository.get_ward_polling_timeseries(
+                    forecaster, self._national_polls_df, matched_code, party
+                )
+                if series.empty:
+                    continue
+                color = self.PARTY_COLORS.get(party, self.PARTY_COLORS["Default"])
+                ax.plot(series["poll_date"], series["projected_share"], color=color, linewidth=2, label=party)
+                plotted_any = True
+
+            if not plotted_any:
+                plt.close(fig)
+                return
+
+            ax.set_title(f"Ward Polling Projection: {ward_name}", color="white", fontsize=11, fontweight="bold")
+            ax.set_ylabel("Projected Vote Share (%)", color="white", fontsize=9)
+            ax.tick_params(colors="white", labelsize=8)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.spines["left"].set_color("#888888")
+            ax.spines["bottom"].set_color("#888888")
+            ax.grid(True, color="white", alpha=0.1, linestyle="--")
+            ax.legend(facecolor="none", edgecolor="none", labelcolor="white", fontsize=8)
+            fig.autofmt_xdate(rotation=30)
+            plt.tight_layout()
+
+            self.set_polls_figure(fig)
+
+        except Exception as e:
+            print(f"[POLLS UI] Could not render ward polling chart: {e}")
 
     def show_default_shap_chart(self):
         fig, ax = plt.subplots(figsize=(5, 3))
@@ -1119,6 +1246,8 @@ class AnalysisScreen(BaseScreen):
                 forecaster_instance = getattr(self.controller, "data_source", None)
                 if forecaster_instance is not None and hasattr(forecaster_instance, "explainer"):
                     self.display_ward_shap(forecaster_instance, ward_name, division_code)
+                if forecaster_instance is not None:
+                    self.display_ward_polls(forecaster_instance, ward_name, division_code)
 
     def refresh_map(self, focus_division=None) -> None:
         """Renders the ward-level map, zoomed/highlighted on the given wd_code if provided."""
