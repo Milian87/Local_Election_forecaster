@@ -160,6 +160,11 @@ class ForecastApp:
             QtCore.Qt.ConnectionType.QueuedConnection,
         )
         self.poll_worker.finished.connect(self.poll_thread.quit)
+        # PySide6 requires the native OS thread to be fully joined (wait()) before
+        # the QThread/worker C++ objects are destroyed, or Windows can crash with
+        # an access violation (0xC0000409) during teardown. quit() alone only
+        # requests the thread's event loop to stop asynchronously.
+        self.poll_thread.finished.connect(self.poll_thread.wait)
         self.poll_thread.finished.connect(self.poll_worker.deleteLater)
         self.poll_thread.finished.connect(self.poll_thread.deleteLater)
         self.poll_thread.finished.connect(
@@ -240,6 +245,8 @@ class ForecastApp:
         )
 
         self.forecast_worker.finished.connect(self.forecast_thread.quit)
+        # See _start_poll_refresh for why wait() must run before deleteLater().
+        self.forecast_thread.finished.connect(self.forecast_thread.wait)
         self.forecast_thread.finished.connect(self.forecast_worker.deleteLater)
         self.forecast_thread.finished.connect(self.forecast_thread.deleteLater)
         self.forecast_thread.finished.connect(

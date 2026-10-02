@@ -1201,7 +1201,21 @@ class FeatureEngineer():
         self.df_raw = pd.merge(self.df_raw, historical_averages, on=['wd_code', 'party_name'], how='left')  # pyright: ignore[reportArgumentType]
         self.df_raw['historical_party_ward_mean'] = self.df_raw['historical_party_ward_mean'].fillna(15.0)
 
-        self.df_raw['candidate_personal_historical_mean'] = self.df_raw['party_vote_share']
+        # NOTE: previously this copied 'party_vote_share' directly, which leaked the
+        # current-period outcome straight into a training feature (diff_vote_share is
+        # derived from party_vote_share, so the model could trivially "predict" it).
+        # Compute a genuine prior-elections-only personal average per candidate instead,
+        # falling back to the party's ward-level history for candidates with no prior
+        # record of their own (new candidates and the synthetic non-standing-party rows).
+        candidate_history = (
+            self.df_raw[self.df_raw['election_year'] < self.target_year] # pyright: ignore[reportOptionalSubscript]
+            .groupby('candidate_id', group_keys=False)['party_vote_share']
+            .mean().reset_index().rename(columns={'party_vote_share': 'candidate_personal_historical_mean'})
+        )
+        self.df_raw = pd.merge(self.df_raw, candidate_history, on='candidate_id', how='left')  # pyright: ignore[reportArgumentType]
+        self.df_raw['candidate_personal_historical_mean'] = self.df_raw['candidate_personal_historical_mean'].fillna(
+            self.df_raw['historical_party_ward_mean']
+        )
 
         print("Generating tactical voting features downstream via vector loops...")
         
@@ -1544,6 +1558,7 @@ class ForecastService:
     def _prepare_target_dataset(
         raw_data: pd.DataFrame,
         target_date: str,
+        target_year: int,
         ward_name_map: dict[str, str] | None = None,
     ) -> pd.DataFrame:
         raw_data = raw_data.copy()
@@ -1552,9 +1567,6 @@ class ForecastService:
         available_dates = sorted(raw_data["election_date"].dropna().unique())
         if not available_dates:
             raise ValueError("No dated election results are available for forecasting.")
-
-        latest_date = available_dates[-1]
-        target_year = selected_date.year if selected_date > latest_date else selected_date.year
 
         # Define your 6 main parties to ensure universal representation per ward
         main_parties = [
@@ -1566,8 +1578,31 @@ class ForecastService:
             "Restore Britain"  # Adjust if your 6th main party is different (e.g., UKIP or Independent)
         ]
 
-        # Get unique wards and their static geographic/census attributes from the latest data
-        latest_data = raw_data[raw_data["election_date"] == latest_date].copy()
+        # A ward/date is only treated as genuinely contested when at least 2 distinct
+        # parties were actually recorded. This guards against by-elections that slip
+        # through upstream as a single candidate row (e.g. a data feed that only
+        # captured the winner) despite not being flagged as uncontested.
+        party_counts = (
+            raw_data.groupby(["wd_code", "election_date"])["party_name"]
+            .nunique()
+            .reset_index(name="party_count")
+        )
+        contested_dates = party_counts[party_counts["party_count"] >= 2][["wd_code", "election_date"]]
+        contested_rows = raw_data.merge(contested_dates, on=["wd_code", "election_date"], how="inner")
+        if contested_rows.empty:
+            raise ValueError("No contested election results are available for forecasting.")
+
+        # Use each ward's own most recent CONTESTED election date rather than one
+        # shared global "latest date" - otherwise any ward whose last contest didn't
+        # fall on that single exact date (e.g. most wards, when the most recent date
+        # in the database is a sparse by-election day) is silently dropped entirely.
+        ward_latest_dates = (
+            contested_rows.groupby("wd_code")["election_date"].max().reset_index(name="ward_latest_date")
+        )
+        latest_data = contested_rows.merge(ward_latest_dates, on="wd_code")
+        latest_data = latest_data[
+            latest_data["election_date"] == latest_data["ward_latest_date"]
+        ].drop(columns=["ward_latest_date"])
         if ward_name_map is not None:
             latest_data = latest_data[latest_data["wd_code"].astype(str).isin(set(ward_name_map))]
 
@@ -1580,12 +1615,16 @@ class ForecastService:
                 if party in existing_parties:
                     party_row = group[group["party_name"].astype(str).str.strip() == party].iloc[0].copy()
                 else:
-                    # Create a synthetic template row for parties that didn't stand last time
+                    # Create a synthetic template row for parties that didn't stand last time.
+                    # candidate_id/candidate_name must NOT be copied from base_row - that would
+                    # falsely attribute an unrelated real candidate's personal voting history to
+                    # this synthetic entry via the candidate_personal_historical_mean lookup.
                     party_row = base_row.copy()
                     party_row["party_name"] = party
                     party_row["party_vote_share"] = 0.0  # Zero or baseline start share
                     party_row["has_incumbent_boost"] = 0
                     party_row["candidate_name"] = f"{party} Candidate"
+                    party_row["candidate_id"] = pd.NA
                 
                 party_row["election_date"] = selected_date
                 party_row["election_year"] = target_year
@@ -1629,7 +1668,7 @@ class ForecastService:
             else latest_timestamp.year + 1
         )
         forecast_input = self._prepare_target_dataset(
-            raw_data, selected_date, ward_name_map
+            raw_data, selected_date, self.forecaster.target_year, ward_name_map
         )
         forecast_input = _attach_polling_features(forecast_input, national_polls)
         forecast_input = self._apply_user_polls(forecast_input, self.forecaster.target_year, user_polls)
